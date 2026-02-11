@@ -26,6 +26,7 @@ import (
 	ipni_provider "github.com/filecoin-project/curio/market/ipni/ipni-provider"
 	"github.com/filecoin-project/curio/market/libp2p"
 	"github.com/filecoin-project/curio/market/retrieval"
+	"github.com/filecoin-project/curio/market/sealmarket"
 	"github.com/filecoin-project/curio/pdp"
 	"github.com/filecoin-project/curio/tasks/message"
 	storage_market "github.com/filecoin-project/curio/tasks/storage-market"
@@ -140,6 +141,7 @@ func isWebSocketUpgrade(r *http.Request) bool {
 type ServiceDeps struct {
 	EthSender  *message.SenderETH
 	DealMarket *storage_market.CurioStorageDealMarket
+	SealMarket *sealmarket.SealMarket
 }
 
 // This starts the public-facing server for market calls.
@@ -312,6 +314,11 @@ func attachRouters(ctx context.Context, r *chi.Mux, d *deps.Deps, sd *ServiceDep
 		return nil, xerrors.Errorf("failed to create new market handler: %w", err)
 	}
 	mhttp.Router(r, dh)
+
+	// Attach remote seal market
+	if sd.SealMarket != nil {
+		sealmarket.Routes(r, sd.SealMarket)
+	}
 
 	return r, nil
 }

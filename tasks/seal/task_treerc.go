@@ -48,11 +48,16 @@ func (t *TreeRCTask) Do(taskID harmonytask.TaskID, stillOwned func() bool) (done
 		RegSealProof abi.RegisteredSealProof `db:"reg_seal_proof"`
 		CommD        string                  `db:"tree_d_cid"`
 		TicketValue  []byte                  `db:"ticket_value"`
+		Pipeline     string                  `db:"pipeline"`
 	}
 
 	err = t.db.Select(ctx, &sectorParamsArr, `
-		SELECT sp_id, sector_number, reg_seal_proof, tree_d_cid, ticket_value
+		SELECT sp_id, sector_number, reg_seal_proof, tree_d_cid, ticket_value, 'local' as pipeline
 		FROM sectors_sdr_pipeline
+		WHERE task_id_tree_c = $1 AND task_id_tree_r = $1
+		UNION ALL
+		SELECT sp_id, sector_number, reg_seal_proof, tree_d_cid, ticket_value, 'remote' as pipeline
+		FROM rseal_provider_pipeline
 		WHERE task_id_tree_c = $1 AND task_id_tree_r = $1`, taskID)
 	if err != nil {
 		return false, xerrors.Errorf("getting sector params: %w", err)
@@ -84,7 +89,7 @@ func (t *TreeRCTask) Do(taskID harmonytask.TaskID, stillOwned func() bool) (done
 	// R / C
 	sealed, unsealed, err := t.sc.TreeRC(ctx, &taskID, sref, commd, sectorParams.TicketValue, dd.PieceInfos)
 	if err != nil {
-		serr := resetSectorSealingState(ctx, sectorParams.SpID, sectorParams.SectorNumber, err, t.db, t.TypeDetails().Name)
+		serr := resetSectorSealingState(ctx, sectorParams.SpID, sectorParams.SectorNumber, err, t.db, t.TypeDetails().Name, sectorParams.Pipeline)
 		if serr != nil {
 			return false, xerrors.Errorf("computing tree r and c: %w", err)
 		}
@@ -94,10 +99,18 @@ func (t *TreeRCTask) Do(taskID harmonytask.TaskID, stillOwned func() bool) (done
 		return false, xerrors.Errorf("commd %s does match unsealed %s", commd.String(), unsealed.String())
 	}
 
-	n, err := t.db.Exec(ctx, `UPDATE sectors_sdr_pipeline
-		SET after_tree_r = true, after_tree_c = true, tree_r_cid = $3, task_id_tree_r = NULL, task_id_tree_c = NULL 
-		WHERE sp_id = $1 AND sector_number = $2`,
-		sectorParams.SpID, sectorParams.SectorNumber, sealed)
+	var n int
+	if sectorParams.Pipeline == "remote" {
+		n, err = t.db.Exec(ctx, `UPDATE rseal_provider_pipeline
+			SET after_tree_r = true, after_tree_c = true, tree_r_cid = $3, task_id_tree_r = NULL, task_id_tree_c = NULL
+			WHERE sp_id = $1 AND sector_number = $2`,
+			sectorParams.SpID, sectorParams.SectorNumber, sealed)
+	} else {
+		n, err = t.db.Exec(ctx, `UPDATE sectors_sdr_pipeline
+			SET after_tree_r = true, after_tree_c = true, tree_r_cid = $3, task_id_tree_r = NULL, task_id_tree_c = NULL
+			WHERE sp_id = $1 AND sector_number = $2`,
+			sectorParams.SpID, sectorParams.SectorNumber, sealed)
+	}
 	if err != nil {
 		return false, xerrors.Errorf("store sdr-trees success: updating pipeline: %w", err)
 	}
@@ -129,21 +142,45 @@ func (t *TreeRCTask) CanAccept(ids []harmonytask.TaskID, engine *harmonytask.Tas
 		indIDs[i] = int64(id)
 	}
 
-	var acceptedIDs []harmonytask.TaskID
-	err := t.db.QueryRow(ctx, `SELECT COALESCE(array_agg(task_id_tree_c), '{}')::bigint[] AS task_ids_tree_c FROM 
-										(
-										    SELECT p.task_id_tree_c FROM sectors_sdr_pipeline p
-											INNER JOIN sector_location l ON p.sp_id = l.miner_id AND p.sector_number = l.sector_num AND l.sector_filetype = 4
-											INNER JOIN storage_path sp ON sp.storage_id = l.storage_id
-											WHERE task_id_tree_c = ANY ($1) 
-											  AND sp.urls IS NOT NULL 
-											  AND sp.urls LIKE '%' || $2 || '%' 
-											  LIMIT 100
-										) s`, indIDs, engine.Host()).Scan(&acceptedIDs)
+	var tasks []struct {
+		TaskID       harmonytask.TaskID `db:"task_id_tree_c"`
+		SpID         int64              `db:"sp_id"`
+		SectorNumber int64              `db:"sector_number"`
+		StorageID    string             `db:"storage_id"`
+	}
+	err := t.db.Select(ctx, &tasks, `
+		SELECT p.task_id_tree_c, p.sp_id, p.sector_number, l.storage_id FROM sectors_sdr_pipeline p
+			INNER JOIN sector_location l ON p.sp_id = l.miner_id AND p.sector_number = l.sector_num
+			WHERE task_id_tree_c = ANY ($1) AND l.sector_filetype = 4
+		UNION ALL
+		SELECT p.task_id_tree_c, p.sp_id, p.sector_number, l.storage_id FROM rseal_provider_pipeline p
+			INNER JOIN sector_location l ON p.sp_id = l.miner_id AND p.sector_number = l.sector_num
+			WHERE task_id_tree_c = ANY ($1) AND l.sector_filetype = 4
+`, indIDs)
 	if err != nil {
 		return nil, xerrors.Errorf("getting tasks from DB: %w", err)
 	}
 
+	ls, err := t.sc.LocalStorage(ctx)
+	if err != nil {
+		return nil, xerrors.Errorf("getting local storage: %w", err)
+	}
+	acceptables := make(map[harmonytask.TaskID]bool)
+	for _, id := range ids {
+		acceptables[id] = true
+	}
+	var acceptedIDs []harmonytask.TaskID
+	for _, task := range tasks {
+		if !acceptables[task.TaskID] {
+			continue
+		}
+		for _, l := range ls {
+			if string(l.ID) == task.StorageID {
+				acceptedIDs = append(acceptedIDs, task.TaskID)
+				break
+			}
+		}
+	}
 	return acceptedIDs, nil
 }
 
@@ -184,7 +221,11 @@ func (t *TreeRCTask) GetSpid(db *harmonydb.DB, taskID int64) string {
 
 func (t *TreeRCTask) GetSectorID(db *harmonydb.DB, taskID int64) (*abi.SectorID, error) {
 	var spId, sectorNumber uint64
-	err := db.QueryRow(context.Background(), `SELECT sp_id,sector_number FROM sectors_sdr_pipeline WHERE task_id_tree_r = $1`, taskID).Scan(&spId, &sectorNumber)
+	err := db.QueryRow(context.Background(), `SELECT sp_id, sector_number FROM (
+		SELECT sp_id, sector_number FROM sectors_sdr_pipeline WHERE task_id_tree_r = $1
+		UNION ALL
+		SELECT sp_id, sector_number FROM rseal_provider_pipeline WHERE task_id_tree_r = $1
+	) s`, taskID).Scan(&spId, &sectorNumber)
 	if err != nil {
 		return nil, err
 	}
@@ -203,7 +244,10 @@ func (t *TreeRCTask) Adder(taskFunc harmonytask.AddTaskFunc) {
 func (t *TreeRCTask) taskToSector(id harmonytask.TaskID) (ffi2.SectorRef, error) {
 	var refs []ffi2.SectorRef
 
-	err := t.db.Select(context.Background(), &refs, `SELECT sp_id, sector_number, reg_seal_proof FROM sectors_sdr_pipeline WHERE task_id_tree_r = $1`, id)
+	err := t.db.Select(context.Background(), &refs, `
+		SELECT sp_id, sector_number, reg_seal_proof FROM sectors_sdr_pipeline WHERE task_id_tree_r = $1
+		UNION ALL
+		SELECT sp_id, sector_number, reg_seal_proof FROM rseal_provider_pipeline WHERE task_id_tree_r = $1`, id)
 	if err != nil {
 		return ffi2.SectorRef{}, xerrors.Errorf("getting sector ref: %w", err)
 	}
