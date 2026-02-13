@@ -124,6 +124,8 @@ require (
 	golang.org/x/text v0.34.0
 	golang.org/x/tools v0.41.0
 	golang.org/x/xerrors v0.0.0-20240903120638-7835f813f4da
+	google.golang.org/grpc v1.77.0
+	google.golang.org/protobuf v1.36.11
 )
 
 require (
@@ -396,8 +398,6 @@ require (
 	golang.org/x/time v0.14.0 // indirect
 	gonum.org/v1/gonum v0.17.0 // indirect
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20251222181119-0a764e51fe1b // indirect
-	google.golang.org/grpc v1.77.0 // indirect
-	google.golang.org/protobuf v1.36.11 // indirect
 	gopkg.in/cheggaaa/pb.v1 v1.0.28 // indirect
 	gopkg.in/inf.v0 v0.9.1 // indirect
 	gopkg.in/yaml.v2 v2.4.0 // indirect
@@ -407,5 +407,9 @@ require (
 )
 
 replace github.com/filecoin-project/filecoin-ffi => ./extern/filecoin-ffi
+
+replace github.com/filecoin-project/go-data-segment v0.0.1 => github.com/aurorainfra/go-data-segment v0.0.0-20260213131148-8255390d04cd
+
+replace github.com/filecoin-project/go-fil-commp-hashhash => github.com/filecoin-project/go-fil-commp-hashhash v0.2.1-0.20260107152413-d6952fff4f39
 
 replace github.com/KarpelesLab/reflink => github.com/magik6k/reflink v1.0.2-patch1
