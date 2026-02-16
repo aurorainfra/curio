@@ -193,19 +193,19 @@ jobs:
           - name: test-all
             target: "`go list ./... | grep -v curio/itests`"
           - name: test-itest-alertnow
-            target: "./itests/alertnow_test.go"
+            target: "-run TestAlertNow ./itests/"
           - name: test-itest-curio
-            target: "./itests/curio_test.go"
+            target: "-run TestCurioHappyPath ./itests/"
           - name: test-itest-remoteseal
             target: "-run TestRemoteSealHappyPath ./itests/"
           - name: test-itest-dynamic-config
             target: "./itests/dyncfg_test.go"
           - name: test-itest-harmonyDB
-            target: "./itests/harmonydb_test.go"
+            target: "-run 'TestCrud|TestTransaction|TestPartialWalk|TestDowngradeTo' ./itests/"
           - name: test-itest-market-dynamic-config
             target: "./itests/market_deal_dynamic_test.go"
           - name: test-itest-pdp-prove
-            target: "./itests/pdp_prove_test.go"
+            target: "-run TestPDPProving ./itests/"
           - name: test-itest-retrievals-test
             target: "./itests/retrievals_test.go"
           - name: test-itest-sql-idempotent-test
