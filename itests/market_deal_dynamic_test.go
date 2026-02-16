@@ -31,6 +31,7 @@ import (
 	"github.com/filecoin-project/curio/harmony/harmonydb"
 	"github.com/filecoin-project/curio/itests/helpers"
 	"github.com/filecoin-project/curio/lib/ffiselect"
+	"github.com/filecoin-project/curio/lib/testutils"
 	"github.com/filecoin-project/curio/lib/storiface"
 	"github.com/filecoin-project/curio/market/indexstore"
 
@@ -83,7 +84,7 @@ func TestMarketDealDynamicMinerUpdate(t *testing.T) {
 
 	defer db.ITestDeleteAll()
 
-	idxStore, err := indexstore.NewIndexStore([]string{helpers.EnvElse("CURIO_HARMONYDB_HOSTS", "127.0.0.1")}, 9042, config.DefaultCurioConfig())
+	idxStore, err := indexstore.NewIndexStore([]string{testutils.EnvElse("CURIO_HARMONYDB_HOSTS", "127.0.0.1")}, testutils.YBCQLPort(), config.DefaultCurioConfig())
 	require.NoError(t, err)
 	err = idxStore.Start(ctx, true)
 	require.NoError(t, err)
@@ -373,7 +374,7 @@ func TestMarketDealSystemBasic(t *testing.T) {
 	require.NoError(t, err)
 	defer db.ITestDeleteAll()
 
-	idxStore, err := indexstore.NewIndexStore([]string{helpers.EnvElse("CURIO_HARMONYDB_HOSTS", "127.0.0.1")}, 9042, config.DefaultCurioConfig())
+	idxStore, err := indexstore.NewIndexStore([]string{testutils.EnvElse("CURIO_HARMONYDB_HOSTS", "127.0.0.1")}, testutils.YBCQLPort(), config.DefaultCurioConfig())
 	require.NoError(t, err)
 	err = idxStore.Start(ctx, true)
 	require.NoError(t, err)
