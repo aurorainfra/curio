@@ -65,3 +65,4 @@
   * [Remote Seal](remote-seal.md)
     * [Client Guide](remote-seal-client.md)
     * [Provider Guide](remote-seal-provider.md)
+  * [cuzk Proving Daemon](experimental-features/cuzk-proving-daemon.md)
