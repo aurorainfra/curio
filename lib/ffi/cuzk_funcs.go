@@ -8,8 +8,8 @@ import (
 	"github.com/ipfs/go-cid"
 	"golang.org/x/xerrors"
 
-	ffi "github.com/filecoin-project/filecoin-ffi"
 	commcid "github.com/filecoin-project/go-fil-commcid"
+	ffi "github.com/filecoin-project/filecoin-ffi"
 	"github.com/filecoin-project/go-state-types/abi"
 	proof2 "github.com/filecoin-project/go-state-types/proof"
 
@@ -155,9 +155,9 @@ func (sb *SealCalls) ProveUpdateCuzk(ctx context.Context, cuzkClient *cuzk.Clien
 		VanillaProofs:   vproofs,
 		SectorNumber:    uint64(sector.ID.Number),
 		MinerId:         uint64(sector.ID.Miner),
-		CommROld:        commROld,
-		CommRNew:        commRNew,
-		CommDNew:        commDNew,
+		CommROld:        commROld[:],
+		CommRNew:        commRNew[:],
+		CommDNew:        commDNew[:],
 	})
 	if err != nil {
 		return nil, xerrors.Errorf("cuzk snap prove failed: %w", err)
@@ -243,5 +243,5 @@ func WinningPoStCuzk(ctx context.Context, cuzkClient *cuzk.Client, proofType abi
 	return []proof2.PoStProof{{
 		PoStProof:  proofType,
 		ProofBytes: resp.Proof,
-	}}, nil
+	}	}, nil
 }
