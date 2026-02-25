@@ -1101,6 +1101,13 @@ description: The default curio configuration
     # type: time.Duration
     #Slack = "6h0m0s"
 
+    # Maximum number of sectors per precommit batch message. The batch will be submitted
+    # immediately when this many sectors are ready, without waiting for the timeout.
+    # 0 = use the protocol maximum. (Default: 0)
+    #
+    # type: int
+    #MaxBatch = 0
+
   # Commit batching configuration
   #
   # type: CommitBatchingConfig
@@ -1123,6 +1130,13 @@ description: The default curio configuration
     #
     # type: time.Duration
     #Slack = "1h0m0s"
+
+    # Maximum number of sectors per commit batch message. The batch will be submitted
+    # immediately when this many sectors are ready, without waiting for the timeout.
+    # 0 = use the protocol maximum. (Default: 0)
+    #
+    # type: int
+    #MaxBatch = 0
 
   # Snap Deals batching configuration
   #
