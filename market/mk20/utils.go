@@ -922,7 +922,8 @@ func parseCustomAuth(header string) (keyType string, pubKey, sig []byte, err err
 }
 
 func verifySignature(db *harmonydb.DB, keyType string, pubKey, signature []byte, cfg *config.CurioConfig) (bool, string, error) {
-	now := time.Now().Truncate(time.Hour)
+	// Use UTC so candidate timestamps match clients (exa-gateway and Curio client use UTC).
+	now := time.Now().UTC().Truncate(time.Hour)
 	minus1 := now.Add(-59 * time.Minute)
 	plus1 := now.Add(59 * time.Minute)
 	timeStamps := []time.Time{now, minus1, plus1}
