@@ -122,7 +122,7 @@ func (d DataSource) Validate(db *harmonydb.DB) (DealCode, error) {
 	if d.Format.Aggregate != nil {
 		fagg = true
 
-		if d.Format.Aggregate.Type != AggregateTypeV1 {
+		if d.Format.Aggregate.Type != AggregateTypeV1 && d.Format.Aggregate.Type != AggregateTypeV2 {
 			return ErrMalformedDataSource, xerrors.Errorf("aggregate type not supported")
 		}
 
@@ -137,7 +137,8 @@ func (d DataSource) Validate(db *harmonydb.DB) (DealCode, error) {
 				return ErrMalformedDataSource, xerrors.Errorf("no pieces in aggregate")
 			}
 
-			if len(d.SourceAggregate.Pieces) == 1 {
+			// AggregateTypeV2 allows a single piece; V1 requires at least 2
+			if d.Format.Aggregate.Type != AggregateTypeV2 && len(d.SourceAggregate.Pieces) == 1 {
 				return ErrMalformedDataSource, xerrors.Errorf("aggregate must have at least 2 pieces")
 			}
 
@@ -921,7 +922,8 @@ func parseCustomAuth(header string) (keyType string, pubKey, sig []byte, err err
 }
 
 func verifySignature(db *harmonydb.DB, keyType string, pubKey, signature []byte, cfg *config.CurioConfig) (bool, string, error) {
-	now := time.Now().Truncate(time.Hour)
+	// Use UTC so candidate timestamps match clients (exa-gateway and Curio client use UTC).
+	now := time.Now().UTC().Truncate(time.Hour)
 	minus1 := now.Add(-59 * time.Minute)
 	plus1 := now.Add(59 * time.Minute)
 	timeStamps := []time.Time{now, minus1, plus1}

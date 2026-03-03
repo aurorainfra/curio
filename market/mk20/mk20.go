@@ -24,7 +24,6 @@ import (
 	"github.com/filecoin-project/go-state-types/builtin/v16/verifreg"
 	verifreg9 "github.com/filecoin-project/go-state-types/builtin/v9/verifreg"
 
-	"github.com/filecoin-project/curio/build"
 	"github.com/filecoin-project/curio/deps/config"
 	"github.com/filecoin-project/curio/harmony/harmonydb"
 	"github.com/filecoin-project/curio/lib/ffi"
@@ -146,9 +145,9 @@ func (m *MK20) ExecuteDeal(ctx context.Context, deal *Deal, auth string) *Provid
 
 	if deal.Products.DDOV1 != nil {
 		// TODO: Remove this check once DDO market is done
-		if build.BuildType == build.Build2k || build.BuildType == build.BuildDebug {
-			return m.processDDODeal(ctx, deal, nil)
-		}
+		//if build.BuildType == build.Build2k || build.BuildType == build.BuildDebug {
+		return m.processDDODeal(ctx, deal, nil)
+		//}
 		log.Errorw("DDOV1 is not supported yet", "deal", deal.Identifier.String())
 		return &ProviderDealRejectionInfo{
 			HTTPCode: ErrUnsupportedProduct,
