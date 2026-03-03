@@ -19,6 +19,7 @@ import (
 	"golang.org/x/crypto/acme/autocert"
 	"golang.org/x/xerrors"
 
+	"github.com/filecoin-project/curio/build"
 	"github.com/filecoin-project/curio/deps"
 	"github.com/filecoin-project/curio/deps/config"
 	"github.com/filecoin-project/curio/harmony/harmonydb"
@@ -27,6 +28,7 @@ import (
 	"github.com/filecoin-project/curio/market/libp2p"
 	"github.com/filecoin-project/curio/market/retrieval"
 	"github.com/filecoin-project/curio/market/sealmarket"
+	"github.com/filecoin-project/curio/pdp"
 	"github.com/filecoin-project/curio/tasks/message"
 	storage_market "github.com/filecoin-project/curio/tasks/storage-market"
 )
@@ -180,6 +182,12 @@ func StartHTTPServer(ctx context.Context, d *deps.Deps, sd *ServiceDeps) error {
 	chiRouter.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		_, _ = fmt.Fprintf(w, "Service is up and running")
+	})
+
+	// Status endpoint to check the health of the service
+	chiRouter.HandleFunc("/version", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = fmt.Fprintf(w, "%s", build.UserVersion())
 	})
 
 	// TODO: Attach a info page here with details about all the service and endpoints
