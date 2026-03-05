@@ -236,7 +236,7 @@ func StartHTTPServer(ctx context.Context, d *deps.Deps, sd *ServiceDeps) error {
 		} else {
 			serr = server.Serve(ln)
 		}
-		if serr != nil && serr != http.ErrServerClosed {
+		if serr != nil && !errors.Is(serr, http.ErrServerClosed) {
 			log.Errorf("Failed to start HTTP server: %s", serr)
 			panic(serr)
 		}
