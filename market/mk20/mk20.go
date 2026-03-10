@@ -5,6 +5,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/minio/sha256-simd"
+	"github.com/multiformats/go-multicodec"
+	"github.com/multiformats/go-multihash"
 	"runtime"
 	"runtime/debug"
 	"sync/atomic"
@@ -36,6 +39,10 @@ import (
 )
 
 var log = logging.Logger("mk20")
+
+func init() {
+	multihash.Register(uint64(multicodec.Fr32Sha256Trunc254Padbintree), sha256.New)
+}
 
 type MK20API interface {
 	StateMinerInfo(context.Context, address.Address, types.TipSetKey) (api.MinerInfo, error)
@@ -724,6 +731,9 @@ func insertPDPPipeline(ctx context.Context, tx *harmonydb.Tx, deal *Deal) error 
 			}
 		}
 
+		// AggregateTypeV2 single piece is the deal's final piece; keep it long_term so indexing/cleanup do not remove it.
+		longTerm := data.Format.Aggregate != nil && data.Format.Aggregate.Type == AggregateTypeV2 && len(toDownload) == 1
+
 		batch := &pgx.Batch{}
 		batchSize := 5000
 
@@ -738,7 +748,7 @@ func insertPDPPipeline(ctx context.Context, tx *harmonydb.Tx, deal *Deal) error 
 				}
 				batch.Queue(`WITH inserted_piece AS (
 									  INSERT INTO parked_pieces (piece_cid, piece_padded_size, piece_raw_size, long_term)
-									  VALUES ($1, $2, $3, FALSE)
+									  VALUES ($1, $2, $3, $9)
 									  ON CONFLICT (piece_cid, piece_padded_size, long_term, cleanup_task_id) DO NOTHING
 									  RETURNING id
 									),
@@ -746,12 +756,12 @@ func insertPDPPipeline(ctx context.Context, tx *harmonydb.Tx, deal *Deal) error 
 									  SELECT COALESCE(
 										(SELECT id FROM inserted_piece),
 										(SELECT id FROM parked_pieces
-										 WHERE piece_cid = $1 AND piece_padded_size = $2 AND long_term = FALSE AND cleanup_task_id IS NULL)
+										 WHERE piece_cid = $1 AND piece_padded_size = $2 AND long_term = $9 AND cleanup_task_id IS NULL)
 									  ) AS id
 									),
 									inserted_ref AS (
 									  INSERT INTO parked_piece_refs (piece_id, data_url, data_headers, long_term)
-									  SELECT id, $4, $5, FALSE FROM selected_piece
+									  SELECT id, $4, $5, $9 FROM selected_piece
 									  RETURNING ref_id
 									)
 									INSERT INTO market_mk20_download_pipeline (id, piece_cid_v2, product, ref_ids)
@@ -762,7 +772,7 @@ func insertPDPPipeline(ctx context.Context, tx *harmonydb.Tx, deal *Deal) error 
 									  (SELECT ref_id FROM inserted_ref)
 									)
 									WHERE NOT market_mk20_download_pipeline.ref_ids @> ARRAY[(SELECT ref_id FROM inserted_ref)];`,
-					k.PieceCID.String(), k.Size, k.RawSize, src.URL, headers, k.ID, ProductNamePDPV1, k.PieceCIDV2.String())
+					k.PieceCID.String(), k.Size, k.RawSize, src.URL, headers, k.ID, ProductNamePDPV1, k.PieceCIDV2.String(), longTerm)
 			}
 
 			if batch.Len() > batchSize {
