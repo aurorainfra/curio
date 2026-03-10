@@ -429,12 +429,24 @@ func (cpr *CachedPieceReader) getPieceReaderFromAggregate(ctx context.Context, p
 }
 
 func (cpr *CachedPieceReader) GetSharedPieceReader(ctx context.Context, pieceCidV2 cid.Cid, retrieval bool) (storiface.Reader, uint64, error) {
-	// Check if this is PieceCidV1 and try to convert to v2 if possible
 	yes := commcidv2.IsPieceCidV2(pieceCidV2)
 	if !yes {
+		// When input is v1: try index first (e.g. CidMapping v1 or piece v1 if ever indexed). Only fall back to market_piece_metadata when index has no match.
+		pieces, err := cpr.idxStor.FindPieceInAggregate(ctx, pieceCidV2)
+		if err == nil && len(pieces) > 0 {
+			for _, p := range pieces {
+				reader, _, err := cpr.getPieceReaderFromMarketPieceDeal(ctx, p.Cid, retrieval)
+				if err != nil {
+					continue
+				}
+				sr := io.NewSectionReader(reader, int64(p.Offset), int64(p.Size))
+				return SubPieceReader{r: reader, sr: sr}, p.Size, nil
+			}
+		}
+		// Not found in index: resolve v1 via market_piece_metadata and convert to v2
 		var rawSize int64
 		var singlePiece bool
-		err := cpr.db.QueryRow(ctx, `WITH meta AS (
+		err = cpr.db.QueryRow(ctx, `WITH meta AS (
 											  SELECT piece_size
 											  FROM market_piece_metadata
 											  WHERE piece_cid = $1
