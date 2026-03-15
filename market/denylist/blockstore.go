@@ -12,6 +12,19 @@ import (
 // ErrBlockDenied is returned when a block is on the denylist.
 var ErrBlockDenied = fmt.Errorf("block denied by denylist")
 
+type bypassKey struct{}
+
+// ContextWithBypass returns a context with the denylist bypass flag set.
+func ContextWithBypass(ctx context.Context) context.Context {
+	return context.WithValue(ctx, bypassKey{}, true)
+}
+
+// BypassFromContext checks if the context has the denylist bypass flag.
+func BypassFromContext(ctx context.Context) bool {
+	val, ok := ctx.Value(bypassKey{}).(bool)
+	return ok && val
+}
+
 // FilteredBlockstore wraps a blockstore and checks every CID access
 // against the denylist. If a CID is denylisted, Get/Has/GetSize return
 // an error as if the block does not exist.
@@ -29,7 +42,10 @@ func NewFilteredBlockstore(inner blockstore.Blockstore, f *Filter) *FilteredBloc
 	}
 }
 
-func (fb *FilteredBlockstore) checkCID(c cid.Cid) error {
+func (fb *FilteredBlockstore) checkCID(ctx context.Context, c cid.Cid) error {
+	if BypassFromContext(ctx) {
+		return nil
+	}
 	denied, ready := fb.filter.IsDenied(c)
 	if !ready {
 		return fmt.Errorf("denylist not yet loaded")
@@ -41,21 +57,21 @@ func (fb *FilteredBlockstore) checkCID(c cid.Cid) error {
 }
 
 func (fb *FilteredBlockstore) Get(ctx context.Context, c cid.Cid) (blocks.Block, error) {
-	if err := fb.checkCID(c); err != nil {
+	if err := fb.checkCID(ctx, c); err != nil {
 		return nil, err
 	}
 	return fb.inner.Get(ctx, c)
 }
 
 func (fb *FilteredBlockstore) Has(ctx context.Context, c cid.Cid) (bool, error) {
-	if err := fb.checkCID(c); err != nil {
+	if err := fb.checkCID(ctx, c); err != nil {
 		return false, err
 	}
 	return fb.inner.Has(ctx, c)
 }
 
 func (fb *FilteredBlockstore) GetSize(ctx context.Context, c cid.Cid) (int, error) {
-	if err := fb.checkCID(c); err != nil {
+	if err := fb.checkCID(ctx, c); err != nil {
 		return 0, err
 	}
 	return fb.inner.GetSize(ctx, c)
