@@ -491,6 +491,8 @@ func (p *Provider) StartPublishing(ctx context.Context) {
 				return
 			}
 			p.announceURLs = urls
+		} else {
+			ticker = time.NewTicker(publishInterval)
 		}
 		log.Info("Starting IPNI provider publishing for testnet build")
 	}
