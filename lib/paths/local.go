@@ -94,6 +94,16 @@ type Local struct {
 	paths map[storiface.ID]*path
 
 	localLk sync.RWMutex
+
+	// localIdx tracks sector files known to exist in local storage paths, so
+	// that the read path (fetch handler) can resolve them without a sector
+	// index (DB) round-trip. It is populated by the directory scans which
+	// already happen on startup and periodic redeclare (declareSectors), and
+	// maintained by removeSector/ClosePath. Entries are stat-validated on
+	// use (see LocalPath), so a stale entry degrades to a cache miss, never
+	// to serving a wrong path.
+	localIdxLk sync.Mutex
+	localIdx   map[storiface.Decl][]storiface.ID
 }
 
 type sectorFile struct {
@@ -254,6 +264,134 @@ func (p *path) sectorPath(sid abi.SectorID, fileType storiface.SectorFileType) s
 	return filepath.Join(p.Local, fileType.String(), storiface.SectorName(sid))
 }
 
+// LocalPath returns the on-disk path of a sector file present in one of the
+// local storage paths, resolved purely from in-memory state — no sector
+// index (DB) round-trip. The result is stat-validated: sector files are
+// immutable while stored, so a cached location is valid until the file is
+// gone, at which point the entry is dropped and ok=false is returned so
+// callers fall back to AcquireSector (the index lookup).
+func (st *Local) LocalPath(sid abi.SectorID, ft storiface.SectorFileType) (string, bool) {
+	decl := storiface.Decl{SectorID: sid, SectorFileType: ft}
+
+	st.localIdxLk.Lock()
+	ids := append([]storiface.ID(nil), st.localIdx[decl]...)
+	st.localIdxLk.Unlock()
+
+	for _, id := range ids {
+		st.localLk.RLock()
+		p, ok := st.paths[id]
+		st.localLk.RUnlock()
+		if !ok || p.Local == "" {
+			continue
+		}
+
+		spath := p.sectorPath(sid, ft)
+		if _, err := os.Stat(spath); err != nil {
+			// file vanished (or is unreadable); drop the entry and let the
+			// caller fall back to the sector index
+			st.dropLocalIdxEntry(decl, id)
+			continue
+		}
+
+		return spath, true
+	}
+
+	return "", false
+}
+
+// noteLocalFile records that a sector file exists in the given local storage
+// path (e.g. after a fallback index lookup found it).
+func (st *Local) noteLocalFile(sid abi.SectorID, ft storiface.SectorFileType, id storiface.ID) {
+	decl := storiface.Decl{SectorID: sid, SectorFileType: ft}
+
+	st.localIdxLk.Lock()
+	defer st.localIdxLk.Unlock()
+
+	for _, have := range st.localIdx[decl] {
+		if have == id {
+			return
+		}
+	}
+	st.localIdx[decl] = append(st.localIdx[decl], id)
+}
+
+func (st *Local) dropLocalIdxEntry(decl storiface.Decl, id storiface.ID) {
+	st.localIdxLk.Lock()
+	defer st.localIdxLk.Unlock()
+
+	ids := st.localIdx[decl]
+	for i, have := range ids {
+		if have == id {
+			ids = append(ids[:i], ids[i+1:]...)
+			break
+		}
+	}
+	if len(ids) == 0 {
+		delete(st.localIdx, decl)
+	} else {
+		st.localIdx[decl] = ids
+	}
+}
+
+// updateLocalIdx replaces the set of sector files known to exist in storage
+// path id with found (the result of a fresh directory scan).
+func (st *Local) updateLocalIdx(id storiface.ID, found map[storiface.Decl]struct{}) {
+	st.localIdxLk.Lock()
+	defer st.localIdxLk.Unlock()
+
+	// drop entries for files no longer present in this path
+	for decl, ids := range st.localIdx {
+		if _, ok := found[decl]; ok {
+			continue
+		}
+		for i, have := range ids {
+			if have == id {
+				ids = append(ids[:i], ids[i+1:]...)
+				break
+			}
+		}
+		if len(ids) == 0 {
+			delete(st.localIdx, decl)
+		} else {
+			st.localIdx[decl] = ids
+		}
+	}
+
+	// add newly found ones
+	for decl := range found {
+		have := false
+		for _, hid := range st.localIdx[decl] {
+			if hid == id {
+				have = true
+				break
+			}
+		}
+		if !have {
+			st.localIdx[decl] = append(st.localIdx[decl], id)
+		}
+	}
+}
+
+// dropLocalIdxStorage removes all entries pointing at storage path id.
+func (st *Local) dropLocalIdxStorage(id storiface.ID) {
+	st.localIdxLk.Lock()
+	defer st.localIdxLk.Unlock()
+
+	for decl, ids := range st.localIdx {
+		for i, have := range ids {
+			if have == id {
+				ids = append(ids[:i], ids[i+1:]...)
+				break
+			}
+		}
+		if len(ids) == 0 {
+			delete(st.localIdx, decl)
+		} else {
+			st.localIdx[decl] = ids
+		}
+	}
+}
+
 type URLs []string
 
 func UrlsFromString(in string) URLs {
@@ -278,7 +416,8 @@ func NewLocal(ctx context.Context, ls LocalStorage, index SectorIndex, url strin
 		index:        index,
 		url:          url,
 
-		paths: map[storiface.ID]*path{},
+		paths:    map[storiface.ID]*path{},
+		localIdx: map[storiface.Decl][]storiface.ID{},
 	}
 
 	localPathPublisher.Store(new(func() any {
@@ -387,6 +526,7 @@ func (st *Local) ClosePath(ctx context.Context, id storiface.ID) error {
 	}
 
 	delete(st.paths, id)
+	st.dropLocalIdxStorage(id)
 
 	return nil
 }
@@ -566,6 +706,7 @@ func (st *Local) declareSectors(ctx context.Context, p string, id storiface.ID, 
 	}
 
 	var declarations []SectorDeclaration
+	found := map[storiface.Decl]struct{}{}
 
 	for _, t := range storiface.PathTypes {
 		ents, err := os.ReadDir(filepath.Join(p, t.String()))
@@ -595,6 +736,8 @@ func (st *Local) declareSectors(ctx context.Context, p string, id storiface.ID, 
 			})
 			declareCounter.Add(1)
 
+			found[storiface.Decl{SectorID: sid, SectorFileType: t}] = struct{}{}
+
 			declarations = append(declarations, SectorDeclaration{
 				StorageID: id,
 				SectorID:  sid,
@@ -603,6 +746,10 @@ func (st *Local) declareSectors(ctx context.Context, p string, id storiface.ID, 
 			})
 		}
 	}
+
+	// Update the in-memory local file index from the fresh scan, so the read
+	// path can serve without consulting the sector index DB.
+	st.updateLocalIdx(id, found)
 
 	// Batch declare sectors
 	log.Infow("starting batch declare", "count", len(declarations), "id", id, "primary", primary)
@@ -1053,6 +1200,8 @@ func (st *Local) removeSector(ctx context.Context, sid abi.SectorID, typ storifa
 	if err := os.RemoveAll(spath); err != nil {
 		log.Errorf("removing sector (%v) from %s: %+v", sid, spath, err)
 	}
+
+	st.dropLocalIdxEntry(storiface.Decl{SectorID: sid, SectorFileType: typ}, storage)
 
 	st.reportStorage(ctx) // report freed space
 

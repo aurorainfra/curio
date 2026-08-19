@@ -111,27 +111,45 @@ func (handler *FetchHandler) remoteGetSector(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
-	// The caller has a lock on this sector already, no need to get one here
-	// passing 0 spt because we don't allocate anything
-	si := storiface.SectorRef{
-		ID:        id,
-		ProofType: 0,
+	// Fast path: sector files known to exist locally are served straight from
+	// the in-memory local file index — no sector index (DB) round-trip.
+	// LocalPath stat-validates its entries, so a vanished file falls through
+	// to the index lookup below.
+	var path string
+	if l, ok := handler.Local.(*Local); ok {
+		path, _ = l.LocalPath(id, ft)
 	}
 
-	paths, _, err := handler.Local.AcquireSector(r.Context(), si, ft, storiface.FTNone, storiface.PathStorage, storiface.AcquireMove)
-	if err != nil {
-		log.Errorf("acquiring sector from local storage: %s", err.Error())
-		w.WriteHeader(500)
-		return
-	}
-
-	// TODO: reserve local storage here
-
-	path := storiface.PathByType(paths, ft)
 	if path == "" {
-		log.Error("acquired path was empty")
-		w.WriteHeader(500)
-		return
+		// The caller has a lock on this sector already, no need to get one here
+		// passing 0 spt because we don't allocate anything
+		si := storiface.SectorRef{
+			ID:        id,
+			ProofType: 0,
+		}
+
+		paths, storageIDs, err := handler.Local.AcquireSector(r.Context(), si, ft, storiface.FTNone, storiface.PathStorage, storiface.AcquireMove)
+		if err != nil {
+			log.Errorf("acquiring sector from local storage: %s", err.Error())
+			w.WriteHeader(500)
+			return
+		}
+
+		// TODO: reserve local storage here
+
+		path = storiface.PathByType(paths, ft)
+		if path == "" {
+			log.Error("acquired path was empty")
+			w.WriteHeader(500)
+			return
+		}
+
+		// remember the location so the next request skips the index lookup
+		if l, ok := handler.Local.(*Local); ok {
+			if sid := storiface.PathByType(storageIDs, ft); sid != "" {
+				l.noteLocalFile(id, ft, storiface.ID(sid))
+			}
+		}
 	}
 
 	stat, err := os.Stat(path)
@@ -248,28 +266,43 @@ func (handler *FetchHandler) remoteGetAllocated(w http.ResponseWriter, r *http.R
 		return
 	}
 
-	// The caller has a lock on this sector already, no need to get one here
-
-	// passing 0 spt because we don't allocate anything
-	si := storiface.SectorRef{
-		ID:        id,
-		ProofType: 0,
+	// Fast path: resolve the unsealed file from the in-memory local file
+	// index (stat-validated) before falling back to the sector index DB.
+	var path string
+	if l, ok := handler.Local.(*Local); ok {
+		path, _ = l.LocalPath(id, ft)
 	}
 
-	// get the path of the local Unsealed file for the given sector.
-	// return error if we do NOT have it.
-	paths, _, err := handler.Local.AcquireSector(r.Context(), si, ft, storiface.FTNone, storiface.PathStorage, storiface.AcquireMove)
-	if err != nil {
-		log.Errorf("acquiring sector on local storage: %s", err.Error())
-		w.WriteHeader(500)
-		return
-	}
-
-	path := storiface.PathByType(paths, ft)
 	if path == "" {
-		log.Error("acquired path was empty")
-		w.WriteHeader(500)
-		return
+		// The caller has a lock on this sector already, no need to get one here
+
+		// passing 0 spt because we don't allocate anything
+		si := storiface.SectorRef{
+			ID:        id,
+			ProofType: 0,
+		}
+
+		// get the path of the local Unsealed file for the given sector.
+		// return error if we do NOT have it.
+		paths, storageIDs, err := handler.Local.AcquireSector(r.Context(), si, ft, storiface.FTNone, storiface.PathStorage, storiface.AcquireMove)
+		if err != nil {
+			log.Errorf("acquiring sector on local storage: %s", err.Error())
+			w.WriteHeader(500)
+			return
+		}
+
+		path = storiface.PathByType(paths, ft)
+		if path == "" {
+			log.Error("acquired path was empty")
+			w.WriteHeader(500)
+			return
+		}
+
+		if l, ok := handler.Local.(*Local); ok {
+			if sid := storiface.PathByType(storageIDs, ft); sid != "" {
+				l.noteLocalFile(id, ft, storiface.ID(sid))
+			}
+		}
 	}
 
 	// open the Unsealed file and check if it has the Unsealed sector for the piece at the given offset and size.
