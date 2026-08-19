@@ -33,6 +33,7 @@ var log = logging.Logger("remote-blockstore")
 type idxAPI interface {
 	PiecesContainingMultihash(ctx context.Context, m multihash.Multihash) ([]indexstore.PieceInfo, error)
 	GetOffset(ctx context.Context, pieceCidv2 cid.Cid, hash multihash.Multihash) (uint64, error)
+	GetPieceBlockOffsets(ctx context.Context, pieceCid cid.Cid) ([]indexstore.BlockOffset, error)
 }
 
 // RemoteBlockstore is a read-only blockstore over all cids across all pieces on a provider.
@@ -41,6 +42,11 @@ type RemoteBlockstore struct {
 	blockMetrics *BlockMetrics
 	db           *harmonydb.DB
 	cpr          *cachedreader.CachedPieceReader
+
+	// offsets is non-nil when Indexing.RetrievalOffsetCachePieces > 0; it
+	// serves multihash -> (piece, offset) resolution for hot pieces from
+	// memory, skipping both index lookups per block.
+	offsets *offsetCache
 }
 
 type BlockMetrics struct {
@@ -56,7 +62,7 @@ type BlockMetrics struct {
 	GetSizeSuccessResponseCount *stats.Int64Measure
 }
 
-func NewRemoteBlockstore(api idxAPI, db *harmonydb.DB, cpr *cachedreader.CachedPieceReader) *RemoteBlockstore {
+func NewRemoteBlockstore(api idxAPI, db *harmonydb.DB, cpr *cachedreader.CachedPieceReader, offsetCachePieces int) *RemoteBlockstore {
 	httpBlockMetrics := &BlockMetrics{
 		GetRequestCount:             HttpRblsGetRequestCount,
 		GetFailResponseCount:        HttpRblsGetFailResponseCount,
@@ -70,12 +76,16 @@ func NewRemoteBlockstore(api idxAPI, db *harmonydb.DB, cpr *cachedreader.CachedP
 		GetSizeSuccessResponseCount: HttpRblsGetSizeSuccessResponseCount,
 	}
 
-	return &RemoteBlockstore{
+	rbs := &RemoteBlockstore{
 		idxApi:       api,
 		blockMetrics: httpBlockMetrics,
 		db:           db,
 		cpr:          cpr,
 	}
+	if offsetCachePieces > 0 {
+		rbs.offsets = newOffsetCache(api, offsetCachePieces)
+	}
+	return rbs
 }
 
 func (ro *RemoteBlockstore) Get(ctx context.Context, c cid.Cid) (b blocks.Block, err error) {
@@ -90,6 +100,16 @@ func (ro *RemoteBlockstore) Get(ctx context.Context, c cid.Cid) (b blocks.Block,
 		}
 		log.Debugw("Get", "cid", c, "err", err, "bytes", nb, "bnil", b == nil)
 	}()
+
+	// Fast path: blocks of recently served pieces resolve piece and offset
+	// from the in-memory offset cache, skipping both index lookups. Any
+	// failure falls through to the full path below (and drops the cached
+	// piece, so a stale index self-heals).
+	if ro.offsets != nil {
+		if data, ok := ro.getViaOffsetCache(ctx, c); ok {
+			return blocks.NewBlockWithCid(data, c)
+		}
+	}
 
 	// Get the pieces that contain the cid
 	pieces, err := ro.idxApi.PiecesContainingMultihash(ctx, c.Hash())
@@ -180,6 +200,13 @@ func (ro *RemoteBlockstore) Get(ctx context.Context, c cid.Cid) (b blocks.Block,
 			merr = multierror.Append(merr, err)
 			continue
 		}
+
+		// Serving this piece worked: make its whole block index resolvable
+		// from memory for subsequent blocks (async, deduplicated).
+		if ro.offsets != nil {
+			ro.offsets.maybeLoad(piece.PieceCid)
+		}
+
 		return blocks.NewBlockWithCid(data, c)
 	}
 
@@ -201,6 +228,54 @@ func (ro *RemoteBlockstore) Get(ctx context.Context, c cid.Cid) (b blocks.Block,
 	}
 
 	return nil, merr
+}
+
+// getViaOffsetCache serves a block using only in-memory metadata: the offset
+// cache resolves multihash -> (piece, offset, exact CAR entry length), and
+// the shared piece reader does the (cached) data access. Returns ok=false on
+// any failure — the caller then takes the full lookup path — and drops the
+// cached piece so stale offsets self-heal.
+func (ro *RemoteBlockstore) getViaOffsetCache(ctx context.Context, c cid.Cid) ([]byte, bool) {
+	piece, offset, entryLen, ok := ro.offsets.lookup(string(c.Hash()))
+	if !ok {
+		return nil, false
+	}
+
+	data, err := func() ([]byte, error) {
+		reader, size, err := ro.cpr.GetSharedPieceReader(ctx, piece, true)
+		if err != nil {
+			return nil, fmt.Errorf("getting piece reader for piece %s: %w", piece, err)
+		}
+		defer func(reader storiface.Reader) {
+			_ = reader.Close()
+		}(reader)
+
+		length := int64(entryLen)
+		if length == 0 {
+			// last block of the piece: bound the read by the piece size
+			if size <= offset {
+				return nil, fmt.Errorf("cached offset %d beyond piece size %d for piece %s", offset, size, piece)
+			}
+			length = int64(size - offset)
+		}
+
+		readerAt := io.NewSectionReader(reader, int64(offset), length)
+		readCid, data, err := util.ReadNode(bufio.NewReader(readerAt))
+		if err != nil {
+			return nil, fmt.Errorf("reading data for block %s from reader for piece %s: %w", c, piece, err)
+		}
+		if !bytes.Equal(readCid.Hash(), c.Hash()) {
+			return nil, fmt.Errorf("read block %s from reader for piece %s, but expected block %s", readCid, piece, c)
+		}
+		return data, nil
+	}()
+	if err != nil {
+		log.Debugw("offset cache read failed, falling back to index lookup", "cid", c, "piece", piece, "err", err)
+		ro.offsets.invalidate(piece)
+		return nil, false
+	}
+
+	return data, true
 }
 
 func (ro *RemoteBlockstore) Has(ctx context.Context, c cid.Cid) (bool, error) {
