@@ -298,7 +298,7 @@ func attachRouters(ctx context.Context, r *chi.Mux, d *deps.Deps, sd *ServiceDep
 	df := denylist.NewFilter(ctx, d.Cfg.HTTP.DenylistServers)
 
 	// Attach retrievals with denylist filtering at both URL and blockstore level
-	rp := retrieval.NewRetrievalProvider(ctx, d.DB, d.IndexStore, d.CachedPieceReader, df)
+	rp := retrieval.NewRetrievalProvider(ctx, d.DB, d.IndexStore, d.CachedPieceReader, df, d.Cfg.Market.StorageMarketConfig.Indexing.RetrievalOffsetCachePieces)
 	retrieval.Router(r, rp, df)
 
 	// Attach IPNI

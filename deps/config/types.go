@@ -916,6 +916,14 @@ type IndexingConfig struct {
 	// startup are found via cache-miss lookups, and entries are dropped when
 	// a read through them fails, so metadata staleness self-heals. (Default: false)
 	PreloadRetrievalMetadata bool
+
+	// RetrievalOffsetCachePieces enables an in-memory cache of the block
+	// index (multihash -> offset) of recently served pieces, sized in pieces
+	// (LRU). Blocks of cached pieces resolve piece and offset without any
+	// index lookups, removing the per-block Cassandra queries for hot /
+	// sequentially-read pieces. Memory use is roughly 3MB per cached 32GiB
+	// piece with ~1MiB blocks. 0 disables the cache. (Default: 0)
+	RetrievalOffsetCachePieces int
 }
 
 type IPNIConfig struct {

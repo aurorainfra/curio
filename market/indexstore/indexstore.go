@@ -400,6 +400,53 @@ func (i *IndexStore) GetOffset(ctx context.Context, pieceCid cid.Cid, hash multi
 	return 0, fmt.Errorf("getting offset for piece %s: %w", pieceCid, err)
 }
 
+// BlockOffset is one (payload multihash, offset) entry of a piece's block index.
+type BlockOffset struct {
+	Hash   multihash.Multihash
+	Offset uint64
+}
+
+// GetPieceBlockOffsets returns the full block index of a piece — every
+// payload multihash with its offset within the piece — sorted by offset.
+// Like GetOffset it falls back to the V1 piece CID key for indexes that were
+// not migrated to V2.
+func (i *IndexStore) GetPieceBlockOffsets(ctx context.Context, pieceCid cid.Cid) ([]BlockOffset, error) {
+	qry := `SELECT PayloadMultihash, BlockOffset FROM PieceBlockOffsetSize WHERE PieceCid = ?`
+
+	get := func(pc cid.Cid) ([]BlockOffset, error) {
+		iter := i.session.Query(qry, pc.Bytes()).WithContext(ctx).Iter()
+		var out []BlockOffset
+		var mh []byte
+		var offset uint64
+		for iter.Scan(&mh, &offset) {
+			out = append(out, BlockOffset{Hash: multihash.Multihash(append([]byte(nil), mh...)), Offset: offset})
+			mh = nil
+		}
+		if err := iter.Close(); err != nil {
+			return nil, fmt.Errorf("getting block offsets for piece %s: %w", pc, err)
+		}
+		return out, nil
+	}
+
+	out, err := get(pieceCid)
+	if err != nil {
+		return nil, err
+	}
+
+	if len(out) == 0 && commcidv2.IsPieceCidV2(pieceCid) {
+		pcid1, _, convErr := commcid.PieceCidV1FromV2(pieceCid)
+		if convErr == nil {
+			out, err = get(pcid1)
+			if err != nil {
+				return nil, err
+			}
+		}
+	}
+
+	sort.Slice(out, func(a, b int) bool { return out[a].Offset < out[b].Offset })
+	return out, nil
+}
+
 func (i *IndexStore) GetPieceHashRange(ctx context.Context, piecev2 cid.Cid, start multihash.Multihash, num int64, strictCheck bool) ([]multihash.Multihash, error) {
 	getHashes := func(pieceCid cid.Cid, start multihash.Multihash, num int64) ([]multihash.Multihash, error) {
 		qry := "SELECT PayloadMultihash FROM PieceBlockOffsetSize WHERE PieceCid = ? AND PayloadMultihash >= ? ORDER BY PayloadMultihash ASC LIMIT ?"
