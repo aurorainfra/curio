@@ -780,7 +780,10 @@ func (r *Remote) Reader(ctx context.Context, s storiface.SectorRef, offset, size
 			return func(startOffsetAligned, endOffsetAligned storiface.PaddedByteIndex) (io.ReadCloser, error) {
 				// ReadRemote fetches a reader that we can use to read the unsealed piece from the remote worker.
 				// It uses a ranged HTTP query to ensure we ONLY read the unsealed piece and not the entire unsealed file.
-				rd, err := r.ReadRemote(ctx, url, int64(offset+abi.PaddedPieceSize(startOffsetAligned)), int64(offset+abi.PaddedPieceSize(endOffsetAligned)))
+				// Note: ReadRemote takes (start, length); passing the absolute end offset
+				// as length makes the Range header overshoot by up to offset+start bytes,
+				// which the remote then streams (and the client never reads).
+				rd, err := r.ReadRemote(ctx, url, int64(offset+abi.PaddedPieceSize(startOffsetAligned)), int64(endOffsetAligned-startOffsetAligned))
 				if err != nil {
 					log.Warnw("reading from remote", "url", url, "error", err)
 					return nil, err
@@ -915,7 +918,8 @@ func (r *Remote) ReaderPiece(ctx context.Context, s storiface.SectorRef, ft stor
 			return func(startOffset, endOffset int64) (io.ReadCloser, error) {
 				// ReadRemote fetches a reader that we can use to read the unsealed piece from the remote worker.
 				// It uses a ranged HTTP query to ensure we ONLY read the unsealed piece and not the entire unsealed file.
-				rd, err := r.ReadRemote(ctx, url, offset+startOffset, offset+endOffset)
+				// Note: ReadRemote takes (start, length), not (start, end).
+				rd, err := r.ReadRemote(ctx, url, offset+startOffset, endOffset-startOffset)
 				if err != nil {
 					log.Warnw("reading from remote", "url", url, "error", err)
 					return nil, err
