@@ -2,6 +2,7 @@ package paths
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -13,6 +14,7 @@ import (
 	"github.com/gorilla/mux"
 	"github.com/ipfs/go-cid"
 	logging "github.com/ipfs/go-log/v2"
+	"github.com/jellydator/ttlcache/v2"
 
 	"github.com/filecoin-project/go-state-types/abi"
 
@@ -22,6 +24,26 @@ import (
 )
 
 var log = logging.Logger("stores")
+
+// fetchFindSectorCache collapses repeated sector-index lookups on the
+// fallback (index-based) serving path; DBIndex.StorageFindSector consults it
+// through FindSectorCacheKey. The TTL is deliberately short: it soaks up
+// request storms for the same sector without meaningfully delaying
+// visibility of just-created files (which miss the in-memory local file
+// index until first resolved).
+var fetchFindSectorCache = func() *ttlcache.Cache {
+	c := ttlcache.NewCache()
+	_ = c.SetTTL(10 * time.Second)
+	c.SetCacheSizeLimit(65_000)
+	c.SkipTTLExtensionOnHit(true)
+	return c
+}()
+
+// withFetchFindSectorCache makes StorageFindSector calls under this context
+// use the handler's short-TTL cache.
+func withFetchFindSectorCache(ctx context.Context) context.Context {
+	return context.WithValue(ctx, FindSectorCacheKey, fetchFindSectorCache)
+}
 
 var _ PartialFileHandler = &DefaultPartialFileHandler{}
 
@@ -128,7 +150,7 @@ func (handler *FetchHandler) remoteGetSector(w http.ResponseWriter, r *http.Requ
 			ProofType: 0,
 		}
 
-		paths, storageIDs, err := handler.Local.AcquireSector(r.Context(), si, ft, storiface.FTNone, storiface.PathStorage, storiface.AcquireMove)
+		paths, storageIDs, err := handler.Local.AcquireSector(withFetchFindSectorCache(r.Context()), si, ft, storiface.FTNone, storiface.PathStorage, storiface.AcquireMove)
 		if err != nil {
 			log.Errorf("acquiring sector from local storage: %s", err.Error())
 			w.WriteHeader(500)
@@ -284,7 +306,7 @@ func (handler *FetchHandler) remoteGetAllocated(w http.ResponseWriter, r *http.R
 
 		// get the path of the local Unsealed file for the given sector.
 		// return error if we do NOT have it.
-		paths, storageIDs, err := handler.Local.AcquireSector(r.Context(), si, ft, storiface.FTNone, storiface.PathStorage, storiface.AcquireMove)
+		paths, storageIDs, err := handler.Local.AcquireSector(withFetchFindSectorCache(r.Context()), si, ft, storiface.FTNone, storiface.PathStorage, storiface.AcquireMove)
 		if err != nil {
 			log.Errorf("acquiring sector on local storage: %s", err.Error())
 			w.WriteHeader(500)
