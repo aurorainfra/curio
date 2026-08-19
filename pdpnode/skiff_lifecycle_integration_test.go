@@ -82,6 +82,7 @@ func TestSkiffCreateAddRetrieveLifecycle(t *testing.T) {
 		pieceprovider.NewSectorReader(remote, index),
 		pieceprovider.NewPieceParkReader(remote, index),
 		nil,
+		false,
 	)
 
 	cfg := config.DefaultCurioConfig()

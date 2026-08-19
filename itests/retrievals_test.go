@@ -648,6 +648,7 @@ func runRetrievalScenarios(
 			dependencies.SectorReader,
 			pieceprovider.NewPieceParkReader(dependencies.Stor, dependencies.Si),
 			idxStore,
+			false,
 		)
 	}
 
@@ -661,6 +662,7 @@ func runRetrievalScenarios(
 			dependencies.SectorReader,
 			pieceprovider.NewPieceParkReader(dependencies.Stor, dependencies.Si),
 			idxStore,
+			false,
 		)
 		_, _, err := cprTrue.GetSharedPieceReader(ctx, fixtures.parkNoDeal.PieceCIDV1, true)
 		require.Error(t, err)
@@ -671,6 +673,7 @@ func runRetrievalScenarios(
 			dependencies.SectorReader,
 			pieceprovider.NewPieceParkReader(dependencies.Stor, dependencies.Si),
 			idxStore,
+			false,
 		)
 		r, sz, err := cprFalse.GetSharedPieceReader(ctx, fixtures.parkNoDeal.PieceCIDV1, false)
 		require.NoError(t, err)
@@ -854,7 +857,7 @@ func runRetrievalScenarios(
 		})
 
 		t.Run("cached reader waiter respects canceled context", func(t *testing.T) {
-			cpr := cachedreader.NewCachedPieceReader(nil, nil, nil, nil)
+			cpr := cachedreader.NewCachedPieceReader(nil, nil, nil, nil, false)
 			ready := make(chan struct{})
 			entry := newCachedSectionReaderValue(t, cachedSectionReaderType, cpr, fixtures.mk12.PieceCIDV1, nil, 0, ready, nil, nil, 0, false)
 			cacheSetEntry(t, cpr, "pieceReaderCache", fixtures.mk12.PieceCIDV1, entry)
@@ -868,7 +871,7 @@ func runRetrievalScenarios(
 		})
 
 		t.Run("cached reader waiter returns cached setup error", func(t *testing.T) {
-			cpr := cachedreader.NewCachedPieceReader(nil, nil, nil, nil)
+			cpr := cachedreader.NewCachedPieceReader(nil, nil, nil, nil, false)
 			ready := make(chan struct{})
 			close(ready)
 			expectedErr := errors.New("cached reader setup failed")
@@ -881,7 +884,7 @@ func runRetrievalScenarios(
 		})
 
 		t.Run("cached reader close without expiry decrements refs only", func(t *testing.T) {
-			cpr := cachedreader.NewCachedPieceReader(nil, nil, nil, nil)
+			cpr := cachedreader.NewCachedPieceReader(nil, nil, nil, nil, false)
 			reader := newTrackingStorifaceReader([]byte("cached data"))
 			entry := newCachedSectionReaderValue(t, cachedSectionReaderType, cpr, fixtures.mk12.PieceCIDV1, reader, 11, closedChan(), nil, func() {}, 2, false)
 
@@ -891,7 +894,7 @@ func runRetrievalScenarios(
 		})
 
 		t.Run("cached reader close after expiry closes underlying reader", func(t *testing.T) {
-			cpr := cachedreader.NewCachedPieceReader(nil, nil, nil, nil)
+			cpr := cachedreader.NewCachedPieceReader(nil, nil, nil, nil, false)
 			reader := newTrackingStorifaceReader([]byte("cached data"))
 			var cancelCalls atomic.Int32
 			entry := newCachedSectionReaderValue(t, cachedSectionReaderType, cpr, fixtures.mk12.PieceCIDV1, reader, 11, closedChan(), nil, func() {
@@ -905,7 +908,7 @@ func runRetrievalScenarios(
 		})
 
 		t.Run("reader cache expiry closes unreferenced reader", func(t *testing.T) {
-			cpr := cachedreader.NewCachedPieceReader(nil, nil, nil, nil)
+			cpr := cachedreader.NewCachedPieceReader(nil, nil, nil, nil, false)
 			setCacheTTL(t, cpr, "pieceReaderCache", 50*time.Millisecond)
 
 			reader := newTrackingStorifaceReader([]byte("cached data"))
@@ -921,7 +924,7 @@ func runRetrievalScenarios(
 		})
 
 		t.Run("reader cache expiry defers cleanup while referenced", func(t *testing.T) {
-			cpr := cachedreader.NewCachedPieceReader(nil, nil, nil, nil)
+			cpr := cachedreader.NewCachedPieceReader(nil, nil, nil, nil, false)
 			setCacheTTL(t, cpr, "pieceReaderCache", 50*time.Millisecond)
 
 			reader := newTrackingStorifaceReader([]byte("cached data"))
