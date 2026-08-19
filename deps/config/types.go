@@ -907,6 +907,15 @@ type IndexingConfig struct {
 
 	// Number of concurrent inserts to split AddIndex calls to
 	InsertConcurrency int
+
+	// PreloadRetrievalMetadata loads all market piece deal metadata (piece ->
+	// sector deal mappings) into memory on startup and serves retrieval-path
+	// piece resolution from that cache, querying the DB only for pieces not
+	// present in it. Opt-in, intended for retrieval-focused deployments;
+	// memory use is roughly 150-250 bytes per piece deal. Deals indexed after
+	// startup are found via cache-miss lookups, and entries are dropped when
+	// a read through them fails, so metadata staleness self-heals. (Default: false)
+	PreloadRetrievalMetadata bool
 }
 
 type IPNIConfig struct {

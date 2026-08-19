@@ -2,7 +2,7 @@ package cachedreader
 
 import (
 	"context"
-	"database/sql"
+
 	"errors"
 	"fmt"
 	"io"
@@ -47,13 +47,17 @@ type CachedPieceReader struct {
 
 	idxStor *indexstore.IndexStore
 
+	// dealCache is non-nil when Indexing.PreloadRetrievalMetadata is enabled;
+	// it serves piece -> market deal metadata from memory.
+	dealCache *pieceDealCache
+
 	pieceReaderCacheMu sync.Mutex
 	pieceReaderCache   *pieceCidKeyCache // Cache for successful readers (10 minutes with TTL extension)
 	pieceErrorCacheMu  sync.Mutex
 	pieceErrorCache    *pieceCidKeyCache // Cache for errors (5 seconds without TTL extension)
 }
 
-func NewCachedPieceReader(db *harmonydb.DB, sectorReader *pieceprovider.SectorReader, pieceParkReader *pieceprovider.PieceParkReader, idxStor *indexstore.IndexStore) *CachedPieceReader {
+func NewCachedPieceReader(db *harmonydb.DB, sectorReader *pieceprovider.SectorReader, pieceParkReader *pieceprovider.PieceParkReader, idxStor *indexstore.IndexStore, preloadDealMeta bool) *CachedPieceReader {
 	prCache := newPieceCidKeyCache(PieceReaderCacheTTL, MaxCachedReaders, false)  // Enable TTL extension for successful readers
 	errorCache := newPieceCidKeyCache(PieceErrorCacheTTL, MaxCachedReaders, true) // Disable TTL extension for errors
 
@@ -64,6 +68,11 @@ func NewCachedPieceReader(db *harmonydb.DB, sectorReader *pieceprovider.SectorRe
 		pieceReaderCache: prCache,
 		pieceErrorCache:  errorCache,
 		idxStor:          idxStor,
+	}
+
+	if preloadDealMeta {
+		cpr.dealCache = newPieceDealCache(db)
+		go cpr.dealCache.start(context.Background())
 	}
 
 	expireCallback := func(key string, reason ttlcache.EvictionReason, value any) {
@@ -179,7 +188,43 @@ func (cpr *CachedPieceReader) getPieceReaderFromMarketPieceDeal(ctx context.Cont
 			return nil, 0, xerrors.Errorf("getting piece CID v1 from piece CID v2: %w", err)
 		}
 		pieceSize = padreader.PaddedSize(rawSize).Padded()
-	} else {
+	}
+
+	var deals []mpdDeal
+
+	// Serve deal metadata from the in-memory cache when preloading is
+	// enabled. Cache miss falls through to the DB path below, which also
+	// handles park-only pieces and deals indexed after startup.
+	if cpr.dealCache != nil {
+		all, err := cpr.dealCache.Get(ctx, pieceCid)
+		if err != nil {
+			log.Warnw("piece deal cache lookup failed, falling back to DB", "pieceCid", pieceCid, "err", err)
+		} else if len(all) > 0 {
+			sz := pieceSize
+			if sz == 0 {
+				// V1 piece cid: derive the piece size from the largest known
+				// deal, mirroring the market_piece_metadata lookup below
+				for _, d := range all {
+					if d.Length > sz {
+						sz = d.Length
+					}
+				}
+			}
+			for _, d := range all {
+				if d.Length == sz {
+					deals = append(deals, d)
+				}
+			}
+			if len(deals) > 0 {
+				pieceSize = sz
+				if rawSize == 0 {
+					rawSize = uint64(pieceSize.Unpadded())
+				}
+			}
+		}
+	}
+
+	if len(deals) == 0 && pieceSize == 0 {
 		// V1 piece CID path: must look up piece size from DB.
 		// This path is taken when Cassandra PayloadToPieces has legacy V1 keys
 		// (indexed before V2 conversion was added to the indexing task).
@@ -208,34 +253,13 @@ func (cpr *CachedPieceReader) getPieceReaderFromMarketPieceDeal(ctx context.Cont
 		rawSize = uint64(pieceSize.Unpadded())
 	}
 
-	var deals []struct {
-		ID       string                  `db:"id"`
-		SpID     int64                   `db:"sp_id"`
-		Sector   int64                   `db:"sector_num"`
-		Offset   sql.NullInt64           `db:"piece_offset"`
-		Length   abi.PaddedPieceSize     `db:"piece_length"`
-		RawSize  int64                   `db:"raw_size"`
-		Proof    abi.RegisteredSealProof `db:"reg_seal_proof"`
-		PieceRef sql.NullInt64           `db:"piece_ref"`
-	}
-
-	err := cpr.db.Select(ctx, &deals, `SELECT 
-											  mpd.id,
-											  mpd.sp_id,
-											  mpd.sector_num,
-											  mpd.piece_offset,
-											  mpd.piece_length,
-											  mpd.raw_size,
-											  mpd.piece_ref,
-											  COALESCE(sm.reg_seal_proof, 0::bigint) AS reg_seal_proof
-											FROM market_piece_deal mpd
-											LEFT JOIN sectors_meta sm
-											  ON sm.sp_id = mpd.sp_id
-											 AND sm.sector_num = mpd.sector_num
+	if len(deals) == 0 {
+		err := cpr.db.Select(ctx, &deals, `SELECT `+mpdDealCols+`
 											WHERE mpd.piece_cid = $1
 											  AND mpd.piece_length = $2;`, pieceCid.String(), pieceSize)
-	if err != nil {
-		return nil, 0, fmt.Errorf("getting piece deals: %w", err)
+		if err != nil {
+			return nil, 0, fmt.Errorf("getting piece deals: %w", err)
+		}
 	}
 
 	if len(deals) == 0 {
@@ -245,7 +269,7 @@ func (cpr *CachedPieceReader) getPieceReaderFromMarketPieceDeal(ctx context.Cont
 
 		if retrieval {
 			var isPDP bool
-			err = cpr.db.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM pdp_piecerefs WHERE piece_cid = $1);`, pieceCid.String()).Scan(&isPDP)
+			err := cpr.db.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM pdp_piecerefs WHERE piece_cid = $1);`, pieceCid.String()).Scan(&isPDP)
 			if err != nil {
 				return nil, 0, fmt.Errorf("failed to query pdp_piecerefs for piece cid %s: %w", pieceCid, err)
 			}
@@ -558,6 +582,12 @@ func (cpr *CachedPieceReader) GetSharedPieceReader(ctx context.Context, pieceCid
 				_ = stats.RecordWithTags(context.Background(), []tag.Mutator{
 					tag.Upsert(reasonKey, "piece_not_found"),
 				}, CachedReaderMeasures.ReaderErrors.M(1))
+
+				// Drop possibly-stale preloaded deal metadata so the next
+				// attempt re-resolves from the DB
+				if cpr.dealCache != nil {
+					cpr.dealCache.Invalidate(pieceCid)
+				}
 
 				// Cache the error in the error cache (using normalized key)
 				cpr.pieceErrorCacheMu.Lock()
