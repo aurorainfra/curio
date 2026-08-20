@@ -24,6 +24,7 @@ import (
 	"github.com/filecoin-project/curio/build"
 	"github.com/filecoin-project/curio/harmony/harmonydb"
 	"github.com/filecoin-project/curio/lib/cachedreader"
+	"github.com/filecoin-project/curio/lib/curetr"
 	"github.com/filecoin-project/curio/market/denylist"
 	"github.com/filecoin-project/curio/market/indexstore"
 	"github.com/filecoin-project/curio/market/retrieval/remoteblockstore"
@@ -49,6 +50,7 @@ type Provider struct {
 	db  *harmonydb.DB
 	bs  *remoteblockstore.RemoteBlockstore
 	fr  *frisbii.HttpIpfs
+	raw *curetr.Handler // fast path for explicit raw single-block requests
 	cpr *cachedreader.CachedPieceReader
 }
 
@@ -76,6 +78,7 @@ func NewRetrievalProvider(ctx context.Context, db *harmonydb.DB, idxStore *index
 		db:  db,
 		bs:  bs,
 		fr:  fr,
+		raw: curetr.NewHandler(cbs),
 		cpr: cpr,
 	}
 }
@@ -253,18 +256,30 @@ func Router(mux *chi.Mux, rp *Provider, df *denylist.Filter) {
 		r.Group(func(r chi.Router) {
 			r.Use(denylist.Middleware(df))
 			r.Use(limiterMiddleware(ipfsHeadRequestLimiter))
-			r.Head(ipfsPrefix+"*", rp.fr.ServeHTTP)
+			r.Head(ipfsPrefix+"*", rp.serveIpfs)
 		})
 
 		r.Group(func(r chi.Router) {
 			r.Use(denylist.Middleware(df))
 			r.Use(limiterMiddleware(ipfsRequestLimiter))
-			r.Get(ipfsPrefix+"*", rp.fr.ServeHTTP)
+			r.Get(ipfsPrefix+"*", rp.serveIpfs)
 		})
 
 		// Info endpoint without limiter or denylist
 		r.Get(infoPage, handleInfo)
 	})
+}
+
+// serveIpfs routes explicit raw single-block requests to the curetr fast
+// path (no IPLD LinkSystem involved) and everything else to frisbii. The
+// same denylist-filtered, read-cached blockstore backs both, so behavior
+// only differs in serving overhead.
+func (rp *Provider) serveIpfs(w http.ResponseWriter, r *http.Request) {
+	if rp.raw != nil && curetr.Handles(r) {
+		rp.raw.ServeHTTP(w, r)
+		return
+	}
+	rp.fr.ServeHTTP(w, r)
 }
 
 func handleInfo(rw http.ResponseWriter, r *http.Request) {
