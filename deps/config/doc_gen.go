@@ -45,6 +45,45 @@ var Doc = map[string][]DocField{
 			Comment: `Accepts a decimal string (e.g., "123.45") with optional "fil" or "attofil" suffix.`,
 		},
 	},
+	"BlockCacheConfig": {
+		{
+			Name: "Disable",
+			Type: "bool",
+
+			Comment: `Disable turns the retrieval block cache off entirely. (Default: false)`,
+		},
+		{
+			Name: "SizeClassKiB",
+			Type: "[]int",
+
+			Comment: `SizeClassKiB are the partition upper bounds in KiB, ascending. Each
+class has its own resident and ghost budgets; blocks larger than the
+last class are never cached. (Default: [32, 128, 2048])`,
+		},
+		{
+			Name: "PartitionMiB",
+			Type: "int",
+
+			Comment: `PartitionMiB is the resident byte budget of each size class in MiB.
+(Default: 1024)`,
+		},
+		{
+			Name: "GhostMiB",
+			Type: "int",
+
+			Comment: `GhostMiB is the tracking (ghost) memory budget of each size class in
+MiB; ghost entries record access frequency for keys well beyond the
+resident set (~1M keys per 128MiB). (Default: 128)`,
+		},
+		{
+			Name: "AdmitAfter",
+			Type: "int",
+
+			Comment: `AdmitAfter is the number of tracked prior accesses required before a
+block is admitted to the resident set; 0 admits on first access.
+(Default: 1, i.e. blocks are cached on their second access)`,
+		},
+	},
 	"CommitBatchingConfig": {
 		{
 			Name: "BaseFeeThreshold",
@@ -1064,6 +1103,12 @@ for no size win. (Default: false)`,
 HTTP/1.1. High-throughput parallel block retrieval performs better
 over many HTTP/1.1 connections than over multiplexed HTTP/2 streams,
 and h2 framing/flow-control adds per-request CPU. (Default: false)`,
+		},
+		{
+			Name: "RetrievalBlockCache",
+			Type: "BlockCacheConfig",
+
+			Comment: `RetrievalBlockCache configures the in-memory cache of served blocks.`,
 		},
 		{
 			Name: "DenylistServers",

@@ -30,6 +30,7 @@ import (
 	ipni_provider "github.com/filecoin-project/curio/market/ipni/ipni-provider"
 	"github.com/filecoin-project/curio/market/libp2p"
 	"github.com/filecoin-project/curio/market/retrieval"
+	"github.com/filecoin-project/curio/market/retrieval/blockcache"
 	"github.com/filecoin-project/curio/pdp"
 	"github.com/filecoin-project/curio/tasks/message"
 	storage_market "github.com/filecoin-project/curio/tasks/storage-market"
@@ -310,7 +311,20 @@ func attachRouters(ctx context.Context, r *chi.Mux, d *deps.Deps, sd *ServiceDep
 	df := denylist.NewFilter(ctx, d.Cfg.HTTP.DenylistServers)
 
 	// Attach retrievals with denylist filtering at both URL and blockstore level
-	rp := retrieval.NewRetrievalProvider(ctx, d.DB, d.IndexStore, d.CachedPieceReader, df, d.Cfg.Market.StorageMarketConfig.Indexing.RetrievalOffsetCacheMemMiB)
+	var bcCfg *blockcache.Config
+	if bc := d.Cfg.HTTP.RetrievalBlockCache; !bc.Disable {
+		classes := make([]int, len(bc.SizeClassKiB))
+		for i, kib := range bc.SizeClassKiB {
+			classes[i] = kib << 10
+		}
+		bcCfg = &blockcache.Config{
+			SizeClasses:    classes,
+			PartitionBytes: int64(bc.PartitionMiB) << 20,
+			GhostBytes:     int64(bc.GhostMiB) << 20,
+			AdmitAfter:     bc.AdmitAfter,
+		}
+	}
+	rp := retrieval.NewRetrievalProvider(ctx, d.DB, d.IndexStore, d.CachedPieceReader, df, d.Cfg.Market.StorageMarketConfig.Indexing.RetrievalOffsetCacheMemMiB, bcCfg)
 	retrieval.Router(r, rp, df)
 
 	// Attach IPNI

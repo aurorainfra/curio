@@ -11,13 +11,11 @@ import (
 	"sync/atomic"
 
 	"github.com/go-chi/chi/v5"
-	lru "github.com/hashicorp/golang-lru/arc/v2"
 	blocks "github.com/ipfs/go-block-format"
 	"github.com/ipfs/go-cid"
 	logging "github.com/ipfs/go-log/v2"
 	"github.com/ipld/frisbii"
 	"github.com/ipld/go-ipld-prime"
-	"github.com/snadrus/must"
 	"go.opencensus.io/stats"
 	"go.opencensus.io/tag"
 
@@ -27,6 +25,7 @@ import (
 	"github.com/filecoin-project/curio/lib/curetr"
 	"github.com/filecoin-project/curio/market/denylist"
 	"github.com/filecoin-project/curio/market/indexstore"
+	"github.com/filecoin-project/curio/market/retrieval/blockcache"
 	"github.com/filecoin-project/curio/market/retrieval/remoteblockstore"
 
 	"github.com/filecoin-project/lotus/blockstore"
@@ -60,16 +59,19 @@ const (
 	infoPage    = "/info"
 )
 
-var RetrievalBlockCache = must.One(lru.NewARC[blockstore.MhString, blocks.Block](4096))
-
-func NewRetrievalProvider(ctx context.Context, db *harmonydb.DB, idxStore *indexstore.IndexStore, cpr *cachedreader.CachedPieceReader, df *denylist.Filter, offsetCacheMemMiB int) *Provider {
+func NewRetrievalProvider(ctx context.Context, db *harmonydb.DB, idxStore *indexstore.IndexStore, cpr *cachedreader.CachedPieceReader, df *denylist.Filter, offsetCacheMemMiB int, bcCfg *blockcache.Config) *Provider {
 	bs := remoteblockstore.NewRemoteBlockstore(idxStore, db, cpr, offsetCacheMemMiB)
 
 	// Wrap the blockstore with denylist filtering so every block fetch
 	// (including interior DAG nodes) is checked against the denylist.
 	fbs := denylist.NewFilteredBlockstore(bs, df)
 
-	cbs := blockstore.NewReadCachedBlockstore(blockstore.Adapt(fbs), &BlockstoreCacheWrap[blockstore.MhString]{Sub: RetrievalBlockCache})
+	// Block cache: size-partitioned, byte-budgeted, ghost-set admission
+	// (see blockcache package doc); nil bcCfg disables caching entirely.
+	var cbs blockstore.Blockstore = blockstore.Adapt(fbs)
+	if bcCfg != nil {
+		cbs = blockstore.NewReadCachedBlockstore(cbs, &BlockstoreCacheWrap[blockstore.MhString]{Sub: blockcache.New(*bcCfg)})
+	}
 
 	lsys := LinkSystemForBlockstore(cbs)
 	fr := frisbii.NewHttpIpfs(ctx, lsys, frisbii.WithBlockHasCheck(cbs.Has))

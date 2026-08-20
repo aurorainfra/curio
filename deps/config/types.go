@@ -146,6 +146,12 @@ func DefaultCurioConfig() *CurioConfig {
 				BrotliLevel:  4,
 				DeflateLevel: 6,
 			},
+			RetrievalBlockCache: BlockCacheConfig{
+				SizeClassKiB: []int{32, 128, 2048},
+				PartitionMiB: 1024,
+				GhostMiB:     128,
+				AdmitAfter:   1,
+			},
 			DenylistServers: NewDynamic([]string{"https://badbits.dwebops.pub/denylist.json"}),
 		},
 	}
@@ -1012,6 +1018,9 @@ type HTTPConfig struct {
 	// and h2 framing/flow-control adds per-request CPU. (Default: false)
 	DisableHTTP2 bool
 
+	// RetrievalBlockCache configures the in-memory cache of served blocks.
+	RetrievalBlockCache BlockCacheConfig
+
 	// DenylistServers is a list of URLs pointing to denylist.json files.
 	// Each URL should serve a JSON array of objects with an "anchor" field containing a SHA256 hash.
 	// Denylisted CIDs will be rejected with HTTP 451. Requests arriving before denylists are loaded
@@ -1025,6 +1034,34 @@ type CompressionConfig struct {
 	GzipLevel    int
 	BrotliLevel  int
 	DeflateLevel int
+}
+
+// BlockCacheConfig configures the retrieval block cache: a size-partitioned,
+// byte-budgeted cache with ghost-set (frequency) admission. Blocks are cached
+// only after AdmitAfter prior tracked accesses, so one-shot reads (sequential
+// streams, scans) never pollute the resident set.
+type BlockCacheConfig struct {
+	// Disable turns the retrieval block cache off entirely. (Default: false)
+	Disable bool
+
+	// SizeClassKiB are the partition upper bounds in KiB, ascending. Each
+	// class has its own resident and ghost budgets; blocks larger than the
+	// last class are never cached. (Default: [32, 128, 2048])
+	SizeClassKiB []int
+
+	// PartitionMiB is the resident byte budget of each size class in MiB.
+	// (Default: 1024)
+	PartitionMiB int
+
+	// GhostMiB is the tracking (ghost) memory budget of each size class in
+	// MiB; ghost entries record access frequency for keys well beyond the
+	// resident set (~1M keys per 128MiB). (Default: 128)
+	GhostMiB int
+
+	// AdmitAfter is the number of tracked prior accesses required before a
+	// block is admitted to the resident set; 0 admits on first access.
+	// (Default: 1, i.e. blocks are cached on their second access)
+	AdmitAfter int
 }
 
 type BalanceManagerConfig struct {
