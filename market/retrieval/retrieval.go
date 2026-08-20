@@ -60,8 +60,8 @@ const (
 
 var RetrievalBlockCache = must.One(lru.NewARC[blockstore.MhString, blocks.Block](4096))
 
-func NewRetrievalProvider(ctx context.Context, db *harmonydb.DB, idxStore *indexstore.IndexStore, cpr *cachedreader.CachedPieceReader, df *denylist.Filter, offsetCachePieces int) *Provider {
-	bs := remoteblockstore.NewRemoteBlockstore(idxStore, db, cpr, offsetCachePieces)
+func NewRetrievalProvider(ctx context.Context, db *harmonydb.DB, idxStore *indexstore.IndexStore, cpr *cachedreader.CachedPieceReader, df *denylist.Filter, offsetCacheMemMiB int) *Provider {
+	bs := remoteblockstore.NewRemoteBlockstore(idxStore, db, cpr, offsetCacheMemMiB)
 
 	// Wrap the blockstore with denylist filtering so every block fetch
 	// (including interior DAG nodes) is checked against the denylist.

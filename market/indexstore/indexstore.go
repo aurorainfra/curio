@@ -406,15 +406,23 @@ type BlockOffset struct {
 	Offset uint64
 }
 
+// ErrPieceIndexTooLarge is returned by GetPieceBlockOffsets when a piece has
+// more than maxEntries index entries. Piece block counts vary wildly (32k for
+// 1MiB-block pieces up to tens of millions for small-block pieces), so
+// callers must bound how much they are willing to read.
+var ErrPieceIndexTooLarge = errors.New("piece block index exceeds maximum entries")
+
 // GetPieceBlockOffsets returns the full block index of a piece — every
 // payload multihash with its offset within the piece — sorted by offset.
-// Like GetOffset it falls back to the V1 piece CID key for indexes that were
-// not migrated to V2.
-func (i *IndexStore) GetPieceBlockOffsets(ctx context.Context, pieceCid cid.Cid) ([]BlockOffset, error) {
-	qry := `SELECT PayloadMultihash, BlockOffset FROM PieceBlockOffsetSize WHERE PieceCid = ?`
+// Pieces with more than maxEntries entries return ErrPieceIndexTooLarge
+// (the limit is applied server-side, bounding the transfer). Like GetOffset
+// it falls back to the V1 piece CID key for indexes that were not migrated
+// to V2.
+func (i *IndexStore) GetPieceBlockOffsets(ctx context.Context, pieceCid cid.Cid, maxEntries int) ([]BlockOffset, error) {
+	qry := `SELECT PayloadMultihash, BlockOffset FROM PieceBlockOffsetSize WHERE PieceCid = ? LIMIT ?`
 
 	get := func(pc cid.Cid) ([]BlockOffset, error) {
-		iter := i.session.Query(qry, pc.Bytes()).WithContext(ctx).Iter()
+		iter := i.session.Query(qry, pc.Bytes(), maxEntries+1).WithContext(ctx).Iter()
 		var out []BlockOffset
 		var mh []byte
 		var offset uint64
@@ -441,6 +449,10 @@ func (i *IndexStore) GetPieceBlockOffsets(ctx context.Context, pieceCid cid.Cid)
 				return nil, err
 			}
 		}
+	}
+
+	if len(out) > maxEntries {
+		return nil, xerrors.Errorf("piece %s: %w", pieceCid, ErrPieceIndexTooLarge)
 	}
 
 	sort.Slice(out, func(a, b int) bool { return out[a].Offset < out[b].Offset })

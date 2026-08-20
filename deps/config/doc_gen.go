@@ -1105,15 +1105,17 @@ startup are found via cache-miss lookups, and entries are dropped when
 a read through them fails, so metadata staleness self-heals. (Default: false)`,
 		},
 		{
-			Name: "RetrievalOffsetCachePieces",
+			Name: "RetrievalOffsetCacheMemMiB",
 			Type: "int",
 
-			Comment: `RetrievalOffsetCachePieces enables an in-memory cache of the block
-index (multihash -> offset) of recently served pieces, sized in pieces
-(LRU). Blocks of cached pieces resolve piece and offset without any
-index lookups, removing the per-block Cassandra queries for hot /
-sequentially-read pieces. Memory use is roughly 3MB per cached 32GiB
-piece with ~1MiB blocks. 0 disables the cache. (Default: 0)`,
+			Comment: `RetrievalOffsetCacheMemMiB enables an in-memory cache of the block
+index (multihash -> offset) of hot pieces, bounded to this many MiB.
+Blocks of cached pieces resolve piece and offset without any index
+lookups, removing the per-block Cassandra queries for hot /
+sequentially-read pieces. Admission and eviction are competitive:
+pieces are cached once their windowed access rate justifies the
+(expensive) index load, and only displace cached pieces with
+meaningfully lower access rates. 0 disables the cache. (Default: 0)`,
 		},
 	},
 	"MK12CollateralConfig": {

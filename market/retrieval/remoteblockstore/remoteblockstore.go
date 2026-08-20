@@ -33,7 +33,7 @@ var log = logging.Logger("remote-blockstore")
 type idxAPI interface {
 	PiecesContainingMultihash(ctx context.Context, m multihash.Multihash) ([]indexstore.PieceInfo, error)
 	GetOffset(ctx context.Context, pieceCidv2 cid.Cid, hash multihash.Multihash) (uint64, error)
-	GetPieceBlockOffsets(ctx context.Context, pieceCid cid.Cid) ([]indexstore.BlockOffset, error)
+	GetPieceBlockOffsets(ctx context.Context, pieceCid cid.Cid, maxEntries int) ([]indexstore.BlockOffset, error)
 }
 
 // RemoteBlockstore is a read-only blockstore over all cids across all pieces on a provider.
@@ -43,7 +43,7 @@ type RemoteBlockstore struct {
 	db           *harmonydb.DB
 	cpr          *cachedreader.CachedPieceReader
 
-	// offsets is non-nil when Indexing.RetrievalOffsetCachePieces > 0; it
+	// offsets is non-nil when Indexing.RetrievalOffsetCacheMemMiB > 0; it
 	// serves multihash -> (piece, offset) resolution for hot pieces from
 	// memory, skipping both index lookups per block.
 	offsets *offsetCache
@@ -62,7 +62,7 @@ type BlockMetrics struct {
 	GetSizeSuccessResponseCount *stats.Int64Measure
 }
 
-func NewRemoteBlockstore(api idxAPI, db *harmonydb.DB, cpr *cachedreader.CachedPieceReader, offsetCachePieces int) *RemoteBlockstore {
+func NewRemoteBlockstore(api idxAPI, db *harmonydb.DB, cpr *cachedreader.CachedPieceReader, offsetCacheMemMiB int) *RemoteBlockstore {
 	httpBlockMetrics := &BlockMetrics{
 		GetRequestCount:             HttpRblsGetRequestCount,
 		GetFailResponseCount:        HttpRblsGetFailResponseCount,
@@ -82,8 +82,8 @@ func NewRemoteBlockstore(api idxAPI, db *harmonydb.DB, cpr *cachedreader.CachedP
 		db:           db,
 		cpr:          cpr,
 	}
-	if offsetCachePieces > 0 {
-		rbs.offsets = newOffsetCache(api, offsetCachePieces)
+	if offsetCacheMemMiB > 0 {
+		rbs.offsets = newOffsetCache(api, offsetCacheMemMiB)
 	}
 	return rbs
 }
@@ -204,7 +204,7 @@ func (ro *RemoteBlockstore) Get(ctx context.Context, c cid.Cid) (b blocks.Block,
 		// Serving this piece worked: make its whole block index resolvable
 		// from memory for subsequent blocks (async, deduplicated).
 		if ro.offsets != nil {
-			ro.offsets.maybeLoad(piece.PieceCid)
+			ro.offsets.serveNotify(piece.PieceCid)
 		}
 
 		return blocks.NewBlockWithCid(data, c)
@@ -236,7 +236,7 @@ func (ro *RemoteBlockstore) Get(ctx context.Context, c cid.Cid) (b blocks.Block,
 // any failure — the caller then takes the full lookup path — and drops the
 // cached piece so stale offsets self-heal.
 func (ro *RemoteBlockstore) getViaOffsetCache(ctx context.Context, c cid.Cid) ([]byte, bool) {
-	piece, offset, entryLen, ok := ro.offsets.lookup(string(c.Hash()))
+	piece, offset, entryLen, ok := ro.offsets.lookup(ctx, string(c.Hash()))
 	if !ok {
 		return nil, false
 	}

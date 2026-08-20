@@ -64,6 +64,18 @@ var (
 	// Blockstore cache metrics
 	BlockstoreCacheHits   = stats.Int64("http/blockstore_cache_hits", "Counter of blockstore cache hits", stats.UnitDimensionless)
 	BlockstoreCacheMisses = stats.Int64("http/blockstore_cache_misses", "Counter of blockstore cache misses", stats.UnitDimensionless)
+	// Retrieval piece offset cache metrics
+	OffsetCacheHitCount          = stats.Int64("http/rbls_offsetcache_hit_count", "Counter of block lookups served from the piece offset cache", stats.UnitDimensionless)
+	OffsetCacheMissCount         = stats.Int64("http/rbls_offsetcache_miss_count", "Counter of block lookups not present in the piece offset cache", stats.UnitDimensionless)
+	OffsetCacheLoadCount         = stats.Int64("http/rbls_offsetcache_load_count", "Counter of piece index load attempts", stats.UnitDimensionless)
+	OffsetCacheLoadErrorCount    = stats.Int64("http/rbls_offsetcache_load_error_count", "Counter of failed piece index loads", stats.UnitDimensionless)
+	OffsetCacheLoadDurationMs    = stats.Float64("http/rbls_offsetcache_load_duration_ms", "Time spent loading a piece block index", stats.UnitMilliseconds)
+	OffsetCacheRefusedLargeCount = stats.Int64("http/rbls_offsetcache_refused_large_count", "Counter of pieces refused because their index exceeds the size caps", stats.UnitDimensionless)
+	OffsetCacheLostCompareCount  = stats.Int64("http/rbls_offsetcache_lost_compare_count", "Counter of loaded pieces dropped because they did not outscore eviction candidates", stats.UnitDimensionless)
+	OffsetCacheEvictCount        = stats.Int64("http/rbls_offsetcache_evict_count", "Counter of pieces evicted from the offset cache", stats.UnitDimensionless)
+	OffsetCacheBytesUsed         = stats.Int64("http/rbls_offsetcache_bytes_used", "Bytes used by the piece offset cache", stats.UnitBytes)
+	OffsetCachePiecesCached      = stats.Int64("http/rbls_offsetcache_pieces_cached", "Pieces currently in the offset cache", stats.UnitDimensionless)
+	OffsetCacheAdminLockHoldMs   = stats.Float64("http/rbls_offsetcache_admin_lock_hold_ms", "Time the offset cache admin lock was held for writes", stats.UnitMilliseconds)
 	// HTTP request metrics
 	HttpRequestCount        = stats.Int64("http/request_count", "Counter of HTTP requests", stats.UnitDimensionless)
 	HttpResponseStatusCount = stats.Int64("http/response_status_count", "Counter of HTTP response status codes", stats.UnitDimensionless)
@@ -165,6 +177,50 @@ var (
 		Measure:     BlockstoreCacheMisses,
 		Aggregation: view.Sum(),
 	}
+	OffsetCacheHitCountView = &view.View{
+		Measure:     OffsetCacheHitCount,
+		Aggregation: view.Sum(),
+	}
+	OffsetCacheMissCountView = &view.View{
+		Measure:     OffsetCacheMissCount,
+		Aggregation: view.Sum(),
+	}
+	OffsetCacheLoadCountView = &view.View{
+		Measure:     OffsetCacheLoadCount,
+		Aggregation: view.Sum(),
+	}
+	OffsetCacheLoadErrorCountView = &view.View{
+		Measure:     OffsetCacheLoadErrorCount,
+		Aggregation: view.Sum(),
+	}
+	OffsetCacheLoadDurationMsView = &view.View{
+		Measure:     OffsetCacheLoadDurationMs,
+		Aggregation: defaultMillisecondsDistribution,
+	}
+	OffsetCacheRefusedLargeCountView = &view.View{
+		Measure:     OffsetCacheRefusedLargeCount,
+		Aggregation: view.Sum(),
+	}
+	OffsetCacheLostCompareCountView = &view.View{
+		Measure:     OffsetCacheLostCompareCount,
+		Aggregation: view.Sum(),
+	}
+	OffsetCacheEvictCountView = &view.View{
+		Measure:     OffsetCacheEvictCount,
+		Aggregation: view.Sum(),
+	}
+	OffsetCacheBytesUsedView = &view.View{
+		Measure:     OffsetCacheBytesUsed,
+		Aggregation: view.LastValue(),
+	}
+	OffsetCachePiecesCachedView = &view.View{
+		Measure:     OffsetCachePiecesCached,
+		Aggregation: view.LastValue(),
+	}
+	OffsetCacheAdminLockHoldMsView = &view.View{
+		Measure:     OffsetCacheAdminLockHoldMs,
+		Aggregation: defaultMillisecondsDistribution,
+	}
 	HttpRequestCountView = &view.View{
 		Measure:     HttpRequestCount,
 		Aggregation: view.Count(),
@@ -212,6 +268,17 @@ func init() {
 		HttpRblsBytesSentCountView,
 		BlockstoreCacheHitsView,
 		BlockstoreCacheMissesView,
+		OffsetCacheHitCountView,
+		OffsetCacheMissCountView,
+		OffsetCacheLoadCountView,
+		OffsetCacheLoadErrorCountView,
+		OffsetCacheLoadDurationMsView,
+		OffsetCacheRefusedLargeCountView,
+		OffsetCacheLostCompareCountView,
+		OffsetCacheEvictCountView,
+		OffsetCacheBytesUsedView,
+		OffsetCachePiecesCachedView,
+		OffsetCacheAdminLockHoldMsView,
 		HttpRequestCountView,
 		HttpResponseStatusCountView,
 		HttpResponseBytesCountView,
