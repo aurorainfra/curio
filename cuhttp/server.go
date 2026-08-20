@@ -61,7 +61,7 @@ func StartHTTPServer(ctx context.Context, d *deps.Deps, sd *ServiceDeps) error {
 
 	chiRouter := NewRouter(RouterConfig{CSP: cfg.CSP})
 
-	compressionMw, err := Compression(&cfg.CompressionLevels)
+	compressionMw, err := HTTPCompression(&cfg)
 	if err != nil {
 		log.Fatalf("Failed to initialize compression middleware: %s", err)
 	}

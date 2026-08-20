@@ -29,7 +29,7 @@ func StartPublic(ctx context.Context, d *Deps, sd *TaskResult) error {
 		return err
 	}
 
-	compressionMw, err := cuhttp.Compression(&cfg.CompressionLevels)
+	compressionMw, err := cuhttp.HTTPCompression(&cfg)
 	if err != nil {
 		return err
 	}

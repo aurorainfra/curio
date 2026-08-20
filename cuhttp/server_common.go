@@ -2,6 +2,7 @@ package cuhttp
 
 import (
 	"context"
+	"crypto/tls"
 	"errors"
 	"fmt"
 	"net/http"
@@ -67,6 +68,11 @@ func StartServer(ctx context.Context, cfg *config.HTTPConfig, db *harmonydb.DB, 
 		WriteTimeout:      writeTimeout,
 		IdleTimeout:       cfg.IdleTimeout,
 		ReadHeaderTimeout: cfg.ReadHeaderTimeout,
+	}
+
+	if cfg.DisableHTTP2 {
+		// a non-nil empty TLSNextProto disables HTTP/2 ALPN
+		server.TLSNextProto = map[string]func(*http.Server, *tls.Conn, http.Handler){}
 	}
 
 	if !cfg.DelegateTLS {

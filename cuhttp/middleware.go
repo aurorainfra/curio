@@ -53,6 +53,16 @@ func SecureHeaders(csp string) func(http.Handler) http.Handler {
 	}
 }
 
+// HTTPCompression returns the response compression middleware for an HTTP
+// server config. With DisableCompression the middleware is skipped entirely -
+// block and piece payloads are high-entropy and compressing them is pure CPU cost.
+func HTTPCompression(cfg *config.HTTPConfig) (func(http.Handler) http.Handler, error) {
+	if cfg.DisableCompression {
+		return func(next http.Handler) http.Handler { return next }, nil
+	}
+	return Compression(&cfg.CompressionLevels)
+}
+
 // Compression wraps handlers with gzip/brotli/deflate based on config levels.
 func Compression(cfg *config.CompressionConfig) (func(http.Handler) http.Handler, error) {
 	return httpcompression.DefaultAdapter(
