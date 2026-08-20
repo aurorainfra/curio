@@ -30,6 +30,11 @@ type mpdDeal struct {
 	PieceRef sql.NullInt64           `db:"piece_ref"`
 }
 
+// Note the inner join on sectors_meta: it restricts the cache to deals whose
+// sector finished sealing. Deals still being sealed have no sectors_meta row
+// (and no readable unsealed copy in its final place); caching them would
+// pin reg_seal_proof=0 rows that stay wrong after sealing completes. They
+// are simply absent here and get backfilled on a post-seal cache miss.
 const mpdDealCols = `mpd.id,
 	mpd.sp_id,
 	mpd.sector_num,
@@ -37,9 +42,9 @@ const mpdDealCols = `mpd.id,
 	mpd.piece_length,
 	mpd.raw_size,
 	mpd.piece_ref,
-	COALESCE(sm.reg_seal_proof, 0::bigint) AS reg_seal_proof
+	sm.reg_seal_proof
 FROM market_piece_deal mpd
-LEFT JOIN sectors_meta sm
+JOIN sectors_meta sm
   ON sm.sp_id = mpd.sp_id
  AND sm.sector_num = mpd.sector_num`
 

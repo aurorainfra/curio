@@ -27,13 +27,13 @@ var log = logging.Logger("stores")
 
 // fetchFindSectorCache collapses repeated sector-index lookups on the
 // fallback (index-based) serving path; DBIndex.StorageFindSector consults it
-// through FindSectorCacheKey. The TTL is deliberately short: it soaks up
-// request storms for the same sector without meaningfully delaying
-// visibility of just-created files (which miss the in-memory local file
-// index until first resolved).
+// through FindSectorCacheKey. Files the node actually has are resolved by
+// the in-memory local file index before this cache is ever consulted, so a
+// relatively long TTL here only delays visibility of files this node does
+// not have yet.
 var fetchFindSectorCache = func() *ttlcache.Cache {
 	c := ttlcache.NewCache()
-	_ = c.SetTTL(10 * time.Second)
+	_ = c.SetTTL(120 * time.Second)
 	c.SetCacheSizeLimit(65_000)
 	c.SkipTTLExtensionOnHit(true)
 	return c
