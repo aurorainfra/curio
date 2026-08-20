@@ -16,7 +16,7 @@ import (
 // Skiff and full Curio both use this; tests can mount it without standing up IPNI.
 func MountRetrievalPublicRoutes(ctx context.Context, r *chi.Mux, d *deps.Deps) *denylist.Filter {
 	df := denylist.NewFilter(ctx, d.Cfg.HTTP.DenylistServers)
-	rp := retrieval.NewRetrievalProvider(ctx, d.DB, d.IndexStore, d.CachedPieceReader, df, d.Cfg.Market.StorageMarketConfig.Indexing.RetrievalOffsetCachePieces)
+	rp := retrieval.NewRetrievalProvider(ctx, d.DB, d.IndexStore, d.CachedPieceReader, df, d.Cfg.Market.StorageMarketConfig.Indexing.RetrievalOffsetCacheMemMiB)
 	retrieval.Router(r, rp, df)
 	return df
 }
