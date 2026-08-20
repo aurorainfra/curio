@@ -1047,6 +1047,25 @@ Consider the trust level of your users and whether you need to support interacti
 			Comment: `CompressionLevels hold the compression level for various compression methods supported by the server`,
 		},
 		{
+			Name: "DisableCompression",
+			Type: "bool",
+
+			Comment: `DisableCompression disables the gzip/brotli/deflate response
+compression middleware entirely. Retrieval payloads (blocks, pieces)
+are high-entropy data that does not compress, so on retrieval-heavy
+deployments compression burns significant CPU on the hot serving path
+for no size win. (Default: false)`,
+		},
+		{
+			Name: "DisableHTTP2",
+			Type: "bool",
+
+			Comment: `DisableHTTP2 disables HTTP/2 on the server; TLS ALPN then only offers
+HTTP/1.1. High-throughput parallel block retrieval performs better
+over many HTTP/1.1 connections than over multiplexed HTTP/2 streams,
+and h2 framing/flow-control adds per-request CPU. (Default: false)`,
+		},
+		{
 			Name: "DenylistServers",
 			Type: "[]string",
 

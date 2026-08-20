@@ -999,6 +999,19 @@ type HTTPConfig struct {
 	// CompressionLevels hold the compression level for various compression methods supported by the server
 	CompressionLevels CompressionConfig
 
+	// DisableCompression disables the gzip/brotli/deflate response
+	// compression middleware entirely. Retrieval payloads (blocks, pieces)
+	// are high-entropy data that does not compress, so on retrieval-heavy
+	// deployments compression burns significant CPU on the hot serving path
+	// for no size win. (Default: false)
+	DisableCompression bool
+
+	// DisableHTTP2 disables HTTP/2 on the server; TLS ALPN then only offers
+	// HTTP/1.1. High-throughput parallel block retrieval performs better
+	// over many HTTP/1.1 connections than over multiplexed HTTP/2 streams,
+	// and h2 framing/flow-control adds per-request CPU. (Default: false)
+	DisableHTTP2 bool
+
 	// DenylistServers is a list of URLs pointing to denylist.json files.
 	// Each URL should serve a JSON array of objects with an "anchor" field containing a SHA256 hash.
 	// Denylisted CIDs will be rejected with HTTP 451. Requests arriving before denylists are loaded

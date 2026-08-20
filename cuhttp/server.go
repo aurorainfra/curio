@@ -2,6 +2,7 @@ package cuhttp
 
 import (
 	"context"
+	"crypto/tls"
 	"errors"
 	"fmt"
 	"net/http"
@@ -167,10 +168,16 @@ func StartHTTPServer(ctx context.Context, d *deps.Deps, sd *ServiceDeps) error {
 	}
 	chiRouter.Use(handlers.CORS(handlers.AllowedOrigins([]string{corsOrigin})))
 
-	// Set up the compression middleware with custom compression levels
-	compressionMw, err := compressionMiddleware(&cfg.CompressionLevels)
-	if err != nil {
-		log.Fatalf("Failed to initialize compression middleware: %s", err)
+	// Set up the compression middleware with custom compression levels.
+	// With DisableCompression the middleware is skipped entirely - block and
+	// piece payloads are high-entropy and compressing them is pure CPU cost.
+	compressionMw := func(next http.Handler) http.Handler { return next }
+	if !cfg.DisableCompression {
+		var err error
+		compressionMw, err = compressionMiddleware(&cfg.CompressionLevels)
+		if err != nil {
+			log.Fatalf("Failed to initialize compression middleware: %s", err)
+		}
 	}
 
 	// Use http.ServeMux as a fallback for routes not handled by chi
@@ -199,7 +206,7 @@ func StartHTTPServer(ctx context.Context, d *deps.Deps, sd *ServiceDeps) error {
 
 	// TODO: Attach a info page here with details about all the service and endpoints
 
-	chiRouter, err = attachRouters(ctx, chiRouter, d, sd)
+	chiRouter, err := attachRouters(ctx, chiRouter, d, sd)
 	if err != nil {
 		return xerrors.Errorf("failed to attach routers: %w", err)
 	}
@@ -212,6 +219,11 @@ func StartHTTPServer(ctx context.Context, d *deps.Deps, sd *ServiceDeps) error {
 		WriteTimeout:      time.Hour * 2,
 		IdleTimeout:       cfg.IdleTimeout,
 		ReadHeaderTimeout: cfg.ReadHeaderTimeout,
+	}
+
+	if cfg.DisableHTTP2 {
+		// a non-nil empty TLSNextProto disables HTTP/2 ALPN
+		server.TLSNextProto = map[string]func(*http.Server, *tls.Conn, http.Handler){}
 	}
 
 	if !cfg.DelegateTLS {
