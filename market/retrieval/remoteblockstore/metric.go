@@ -64,6 +64,9 @@ var (
 	// Blockstore cache metrics
 	BlockstoreCacheHits   = stats.Int64("http/blockstore_cache_hits", "Counter of blockstore cache hits", stats.UnitDimensionless)
 	BlockstoreCacheMisses = stats.Int64("http/blockstore_cache_misses", "Counter of blockstore cache misses", stats.UnitDimensionless)
+	// /ipfs dispatch: which implementation served the request
+	HttpIpfsRawFastpathCount = stats.Int64("http/ipfs_raw_fastpath_count", "Counter of /ipfs requests served by the curetr raw-block fast path", stats.UnitDimensionless)
+	HttpIpfsFrisbiiCount     = stats.Int64("http/ipfs_frisbii_count", "Counter of /ipfs requests served by frisbii", stats.UnitDimensionless)
 	// Retrieval piece offset cache metrics
 	OffsetCacheHitCount          = stats.Int64("http/rbls_offsetcache_hit_count", "Counter of block lookups served from the piece offset cache", stats.UnitDimensionless)
 	OffsetCacheMissCount         = stats.Int64("http/rbls_offsetcache_miss_count", "Counter of block lookups not present in the piece offset cache", stats.UnitDimensionless)
@@ -177,6 +180,14 @@ var (
 		Measure:     BlockstoreCacheMisses,
 		Aggregation: view.Sum(),
 	}
+	HttpIpfsRawFastpathCountView = &view.View{
+		Measure:     HttpIpfsRawFastpathCount,
+		Aggregation: view.Sum(),
+	}
+	HttpIpfsFrisbiiCountView = &view.View{
+		Measure:     HttpIpfsFrisbiiCount,
+		Aggregation: view.Sum(),
+	}
 	OffsetCacheHitCountView = &view.View{
 		Measure:     OffsetCacheHitCount,
 		Aggregation: view.Sum(),
@@ -268,6 +279,8 @@ func init() {
 		HttpRblsBytesSentCountView,
 		BlockstoreCacheHitsView,
 		BlockstoreCacheMissesView,
+		HttpIpfsRawFastpathCountView,
+		HttpIpfsFrisbiiCountView,
 		OffsetCacheHitCountView,
 		OffsetCacheMissCountView,
 		OffsetCacheLoadCountView,

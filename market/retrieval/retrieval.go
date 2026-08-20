@@ -276,9 +276,11 @@ func Router(mux *chi.Mux, rp *Provider, df *denylist.Filter) {
 // only differs in serving overhead.
 func (rp *Provider) serveIpfs(w http.ResponseWriter, r *http.Request) {
 	if rp.raw != nil && curetr.Handles(r) {
+		stats.Record(r.Context(), remoteblockstore.HttpIpfsRawFastpathCount.M(1))
 		rp.raw.ServeHTTP(w, r)
 		return
 	}
+	stats.Record(r.Context(), remoteblockstore.HttpIpfsFrisbiiCount.M(1))
 	rp.fr.ServeHTTP(w, r)
 }
 
