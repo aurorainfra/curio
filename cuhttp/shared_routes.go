@@ -10,13 +10,27 @@ import (
 	"github.com/filecoin-project/curio/market/denylist"
 	ipni_provider "github.com/filecoin-project/curio/market/ipni/ipni-provider"
 	"github.com/filecoin-project/curio/market/retrieval"
+	"github.com/filecoin-project/curio/market/retrieval/blockcache"
 )
 
 // MountRetrievalPublicRoutes mounts piece/IPFS retrieval with bad-bits denylist filtering.
 // Skiff and full Curio both use this; tests can mount it without standing up IPNI.
 func MountRetrievalPublicRoutes(ctx context.Context, r *chi.Mux, d *deps.Deps) *denylist.Filter {
 	df := denylist.NewFilter(ctx, d.Cfg.HTTP.DenylistServers)
-	rp := retrieval.NewRetrievalProvider(ctx, d.DB, d.IndexStore, d.CachedPieceReader, df, d.Cfg.Market.StorageMarketConfig.Indexing.RetrievalOffsetCacheMemMiB)
+	var bcCfg *blockcache.Config
+	if bc := d.Cfg.HTTP.RetrievalBlockCache; !bc.Disable {
+		classes := make([]int, len(bc.SizeClassKiB))
+		for i, kib := range bc.SizeClassKiB {
+			classes[i] = kib << 10
+		}
+		bcCfg = &blockcache.Config{
+			SizeClasses:    classes,
+			PartitionBytes: int64(bc.PartitionMiB) << 20,
+			GhostBytes:     int64(bc.GhostMiB) << 20,
+			AdmitAfter:     bc.AdmitAfter,
+		}
+	}
+	rp := retrieval.NewRetrievalProvider(ctx, d.DB, d.IndexStore, d.CachedPieceReader, df, d.Cfg.Market.StorageMarketConfig.Indexing.RetrievalOffsetCacheMemMiB, bcCfg)
 	retrieval.Router(r, rp, df)
 	return df
 }
