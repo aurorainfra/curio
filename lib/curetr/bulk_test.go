@@ -586,3 +586,18 @@ func TestBulkConfigLimits(t *testing.T) {
 	require.Equal(t, float64(5), info["maxWindow"])
 	require.Equal(t, float64(3), info["maxStreams"])
 }
+
+func TestBulkEnabledSwitch(t *testing.T) {
+	// nil config and nil field: enabled
+	require.True(t, NewBulkHandler(nil, nil, nil, nil).Enabled())
+	require.True(t, NewBulkHandler(nil, nil, nil, &config.BulkRetrievalConfig{}).Enabled())
+
+	// 0 streams is the off switch, live in both directions
+	cfg := &config.BulkRetrievalConfig{MaxConcurrentStreams: config.NewDynamic(0)}
+	h := NewBulkHandler(nil, nil, nil, cfg)
+	require.False(t, h.Enabled())
+	cfg.MaxConcurrentStreams.Set(32)
+	require.True(t, h.Enabled())
+	cfg.MaxConcurrentStreams.Set(0)
+	require.False(t, h.Enabled())
+}

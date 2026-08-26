@@ -143,6 +143,13 @@ func NewBulkHandler(res BulkResolver, prs PieceReaderSource, deny func(cid.Cid) 
 	return &BulkHandler{res: res, prs: prs, deny: deny, cfg: cfg}
 }
 
+// Enabled reports whether the endpoint should be served at all:
+// MaxConcurrentStreams == 0 is the operator off switch (routes 404 so
+// clients negative-cache the capability and fall back).
+func (h *BulkHandler) Enabled() bool {
+	return h.cfg == nil || h.cfg.MaxConcurrentStreams == nil || h.cfg.MaxConcurrentStreams.Get() != 0
+}
+
 // ServeInfo answers the capability probe.
 func (h *BulkHandler) ServeInfo(w http.ResponseWriter, _ *http.Request) {
 	lim := h.limits()

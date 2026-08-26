@@ -149,7 +149,9 @@ All limits live in the `HTTP.BulkRetrieval` config section and are
 dynamic (changes apply to running nodes): `MaxConcurrentStreams`,
 `MaxBlocks`, `MaxWindow`, `DefaultWindow`, `AdvertisedMaxStreams`,
 `MergeGapKiB`, `MaxRangeMiB`, `ResolveParallelism`. Peak buffer memory is
-bounded by `MaxConcurrentStreams × MaxRangeMiB`.
+bounded by `MaxConcurrentStreams × MaxRangeMiB`. Setting
+`MaxConcurrentStreams = 0` disables the endpoint: both routes return 404
+and capability-probing clients fall back to per-block retrieval.
 
 Observability: `curio_curetr_bulk_*` metrics — request/frame counters,
 bytes served, request/resolve/read latencies, and the merge-efficiency
