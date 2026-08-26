@@ -343,7 +343,7 @@ func Router(mux *chi.Mux, rp *Provider, df *denylist.Filter) {
 }
 
 func (rp *Provider) serveBulkBlocks(w http.ResponseWriter, r *http.Request) {
-	if rp.bulk == nil {
+	if rp.bulk == nil || !rp.bulk.Enabled() {
 		http.Error(w, "bulk retrieval not available", http.StatusNotFound)
 		return
 	}
@@ -351,7 +351,7 @@ func (rp *Provider) serveBulkBlocks(w http.ResponseWriter, r *http.Request) {
 }
 
 func (rp *Provider) serveBulkInfo(w http.ResponseWriter, r *http.Request) {
-	if rp.bulk == nil {
+	if rp.bulk == nil || !rp.bulk.Enabled() {
 		http.Error(w, "bulk retrieval not available", http.StatusNotFound)
 		return
 	}

@@ -93,7 +93,10 @@ block is admitted to the resident set; 0 admits on first access.
 requests over the limit get HTTP 429. Each stream drives one
 sequential disk read pattern with up to a MaxRangeMiB response
 buffer, so this bounds both memory (MaxConcurrentStreams x
-MaxRangeMiB) and disk parallelism. Must be positive. (Default: 32)
+MaxRangeMiB) and disk parallelism. 0 disables the bulk endpoint
+entirely — both /aurora/bulk/v0 routes return 404 and well-behaved
+clients negative-cache the capability and fall back to per-block
+retrieval. Negative values fall back to the default. (Default: 32)
 Updates will affect running instances.`,
 		},
 		{
