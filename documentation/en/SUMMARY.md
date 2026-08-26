@@ -32,6 +32,7 @@
   * [IPNI (Interplanetary Network Indexer) Provider](curio-market/ipni-interplanetary-network-indexer-provider.md)
   * [Market UI](curio-market/market-ui.md)
   * [Retrievals](curio-market/retrievals.md)
+  * [Bulk Block Retrieval](curio-market/bulk-retrieval.md)
   * [Migrating From Boost](curio-market/migrating-from-boost.md)
 * [Market 2.0](market-2.0/README.md)
   * [Architecture](market-2.0/architecture.md)
