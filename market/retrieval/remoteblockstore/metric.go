@@ -79,6 +79,10 @@ var (
 	OffsetCacheBytesUsed         = stats.Int64("http/rbls_offsetcache_bytes_used", "Bytes used by the piece offset cache", stats.UnitBytes)
 	OffsetCachePiecesCached      = stats.Int64("http/rbls_offsetcache_pieces_cached", "Pieces currently in the offset cache", stats.UnitDimensionless)
 	OffsetCacheAdminLockHoldMs   = stats.Float64("http/rbls_offsetcache_admin_lock_hold_ms", "Time the offset cache admin lock was held for writes", stats.UnitMilliseconds)
+	// Bulk resolve: hinted lookups that missed and fell back to full
+	// resolution (client sent a stale hint or a different piece-cid form
+	// than the index key, e.g. v1 commP vs v2)
+	BulkHintMissCount = stats.Int64("http/rbls_bulk_hint_miss_count", "Counter of bulk piece hints that did not resolve and fell back to full resolution", stats.UnitDimensionless)
 	// HTTP request metrics
 	HttpRequestCount        = stats.Int64("http/request_count", "Counter of HTTP requests", stats.UnitDimensionless)
 	HttpResponseStatusCount = stats.Int64("http/response_status_count", "Counter of HTTP response status codes", stats.UnitDimensionless)
@@ -188,6 +192,10 @@ var (
 		Measure:     HttpIpfsFrisbiiCount,
 		Aggregation: view.Sum(),
 	}
+	BulkHintMissCountView = &view.View{
+		Measure:     BulkHintMissCount,
+		Aggregation: view.Sum(),
+	}
 	OffsetCacheHitCountView = &view.View{
 		Measure:     OffsetCacheHitCount,
 		Aggregation: view.Sum(),
@@ -281,6 +289,7 @@ func init() {
 		BlockstoreCacheMissesView,
 		HttpIpfsRawFastpathCountView,
 		HttpIpfsFrisbiiCountView,
+		BulkHintMissCountView,
 		OffsetCacheHitCountView,
 		OffsetCacheMissCountView,
 		OffsetCacheLoadCountView,

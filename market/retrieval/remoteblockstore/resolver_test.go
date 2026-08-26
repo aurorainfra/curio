@@ -91,8 +91,20 @@ func TestResolveBlock(t *testing.T) {
 		require.True(t, format.IsNotFound(err))
 	})
 
-	t.Run("hinted, not in hinted piece", func(t *testing.T) {
-		other := cid.NewCidV1(cid.Raw, offs2[7].Hash)
+	t.Run("wrong hint falls back to full resolution", func(t *testing.T) {
+		// hints are advisory: blk3 hinted with a piece it is not indexed
+		// under (as with a v1-commP hint against a v2-keyed index) must
+		// still resolve through PiecesContainingMultihash
+		bogus, _ := testPiece(t, "bogus", 0)
+		loc, err := ro.ResolveBlock(ctx, blk3, bogus)
+		require.NoError(t, err)
+		require.Equal(t, p1, loc.Piece)
+		require.Equal(t, offs1[3].Offset, loc.Offset)
+		require.Equal(t, []cid.Cid{p2}, loc.Alts)
+	})
+
+	t.Run("hinted, block not indexed at all", func(t *testing.T) {
+		other := cid.NewCidV1(cid.Raw, offs2[7].Hash) // not in containing map
 		_, err := ro.ResolveBlock(ctx, other, p1)
 		require.True(t, format.IsNotFound(err))
 	})
