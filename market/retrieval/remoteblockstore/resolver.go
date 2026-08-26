@@ -8,6 +8,7 @@ import (
 	"github.com/ipfs/go-cid"
 	format "github.com/ipfs/go-ipld-format"
 	"github.com/yugabyte/gocql"
+	"go.opencensus.io/stats"
 )
 
 // BlockLoc locates one block inside a piece for bulk retrieval. Exactly one
@@ -36,9 +37,11 @@ type BlockLoc struct {
 
 // ResolveBlock resolves a block cid to its piece location without reading
 // any data. Resolution order: in-memory offset cache (no index queries),
-// then the block index — with pieceHint defined the piece lookup is
-// skipped and only the offset is queried. A block that is not indexed (or
-// not present in the hinted piece) returns format.ErrNotFound.
+// then the hinted piece (one offset query), then the full block index.
+// Hints are advisory: a hint that does not resolve — stale, or a
+// different piece-cid form than the index key (e.g. the deal's v1 commP
+// where the index is keyed by v2) — costs one extra lookup, never a
+// not-found. Only blocks absent from the index return format.ErrNotFound.
 func (ro *RemoteBlockstore) ResolveBlock(ctx context.Context, c cid.Cid, pieceHint cid.Cid) (BlockLoc, error) {
 	mh := c.Hash()
 
@@ -51,20 +54,29 @@ func (ro *RemoteBlockstore) ResolveBlock(ctx context.Context, c cid.Cid, pieceHi
 		}
 	}
 
-	loc := BlockLoc{Piece: pieceHint}
-	if !pieceHint.Defined() {
-		pieces, err := ro.idxApi.PiecesContainingMultihash(ctx, mh)
-		if err != nil {
-			return BlockLoc{}, fmt.Errorf("getting pieces containing cid %s: %w", c, err)
+	if pieceHint.Defined() {
+		offset, err := ro.idxApi.GetOffset(ctx, pieceHint, mh)
+		if err == nil {
+			return BlockLoc{Piece: pieceHint, Offset: offset}, nil
 		}
-		if len(pieces) == 0 {
-			return BlockLoc{}, format.ErrNotFound{Cid: c}
+		if !errors.Is(err, gocql.ErrNotFound) {
+			return BlockLoc{}, fmt.Errorf("getting offset for cid %s in hinted piece %s: %w", c, pieceHint, err)
 		}
-		loc.Piece = pieces[0].PieceCid
-		loc.BlockSize = pieces[0].BlockSize
-		for _, p := range pieces[1:] {
-			loc.Alts = append(loc.Alts, p.PieceCid)
-		}
+		stats.Record(ctx, BulkHintMissCount.M(1))
+	}
+
+	loc := BlockLoc{}
+	pieces, err := ro.idxApi.PiecesContainingMultihash(ctx, mh)
+	if err != nil {
+		return BlockLoc{}, fmt.Errorf("getting pieces containing cid %s: %w", c, err)
+	}
+	if len(pieces) == 0 {
+		return BlockLoc{}, format.ErrNotFound{Cid: c}
+	}
+	loc.Piece = pieces[0].PieceCid
+	loc.BlockSize = pieces[0].BlockSize
+	for _, p := range pieces[1:] {
+		loc.Alts = append(loc.Alts, p.PieceCid)
 	}
 
 	offset, err := ro.idxApi.GetOffset(ctx, loc.Piece, mh)

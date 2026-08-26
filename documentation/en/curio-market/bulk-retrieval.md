@@ -55,10 +55,14 @@ order.
 
 Piece hints skip cid→piece resolution server-side (one index query per
 block instead of two, none when the piece's block index is cached in
-memory). A wrong hint fails only that block (status 1); the server may
-also serve a hinted block from a *different* piece than hinted when its
-caches know a better copy — blocks are content-addressed, so the bytes are
-the same.
+memory). Hints are **advisory**: a hint that does not resolve (stale, or
+a different piece-cid form than the server's index key) costs one extra
+lookup and falls back to full multihash resolution — it never produces a
+not-found by itself. Either v1 (`baga…` commP) or v2 piece cids are
+accepted; v2 is preferred since it is the exact index key and keeps the
+resolve at one query. The server may also serve a hinted block from a
+*different* piece than hinted when its caches know a better copy — blocks
+are content-addressed, so the bytes are the same.
 
 ## Response
 

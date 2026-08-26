@@ -379,6 +379,12 @@ func (s *bulkServe) processBuckets(ctx context.Context, buckets map[cid.Cid][]bu
 				if err != nil {
 					continue
 				}
+				if loc.Piece == piece {
+					// hints are advisory: a missed alt hint falls back to
+					// full resolution, which can hand back the piece that
+					// just failed — try the next alt instead
+					continue
+				}
 				nm := fm.m
 				nm.offset = loc.Offset
 				nm.entryLen = loc.EntryLen

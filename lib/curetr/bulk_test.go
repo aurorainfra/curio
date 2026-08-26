@@ -96,6 +96,7 @@ type fakeBulkResolver struct {
 	invalidated map[cid.Cid]int
 	resolves    int
 	hinted      int
+	hintMisses  int
 }
 
 func newFakeResolver(pieces ...*carPiece) *fakeBulkResolver {
@@ -142,7 +143,9 @@ func (f *fakeBulkResolver) ResolveBlock(ctx context.Context, c cid.Cid, pieceHin
 				return f.locFor(p, i), nil
 			}
 		}
-		return remoteblockstore.BlockLoc{}, format.ErrNotFound{Cid: c}
+		// hints are advisory (mirrors RemoteBlockstore.ResolveBlock):
+		// a hint that doesn't resolve falls through to full resolution
+		f.hintMisses++
 	}
 
 	for pi, p := range f.pieces {
@@ -518,6 +521,28 @@ func TestBulkPieceHints(t *testing.T) {
 	requireServed(t, frames, want, len(cp.blocks))
 	require.Equal(t, 3, res.hinted)
 	require.Len(t, src.readAts, 1)
+}
+
+func TestBulkWrongHintsStillServed(t *testing.T) {
+	// a hint that doesn't match the piece the blocks are indexed under
+	// (e.g. a v1 commP against a v2-keyed index) must cost a fallback
+	// lookup, not not-found frames
+	cp := buildCarPiece(t, "wronghint", []int{800, 800, 800})
+	res := newFakeResolver(cp)
+	src := newFakeReaderSource(cp)
+
+	bogus := pieceCidFor(t, "not-the-index-key")
+	req := BulkRequest{Blocks: cp.blocks, Pieces: []cid.Cid{bogus, bogus, bogus}}
+	want := map[uint64][]byte{}
+	for i, p := range cp.payloads {
+		want[uint64(i)] = p
+	}
+
+	code, frames := doBulk(t, mkBulkHandler(res, src), req)
+	require.Equal(t, 200, code)
+	requireServed(t, frames, want, len(cp.blocks))
+	require.Equal(t, 3, res.hintMisses)
+	require.Len(t, src.readAts, 1, "wrong hints must not break read merging")
 }
 
 func TestBulkValidation(t *testing.T) {
