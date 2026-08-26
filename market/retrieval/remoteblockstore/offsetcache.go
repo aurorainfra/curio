@@ -76,6 +76,7 @@ const (
 type windowCounter struct{ cur, prev atomic.Int64 }
 
 func (w *windowCounter) bump()        { w.cur.Add(1) }
+func (w *windowCounter) add(n int64)  { w.cur.Add(n) }
 func (w *windowCounter) score() int64 { return w.cur.Load() + w.prev.Load() }
 func (w *windowCounter) rotate()      { w.prev.Store(w.cur.Swap(0)) }
 
@@ -182,6 +183,13 @@ func (oc *offsetCache) lookup(ctx context.Context, mh string) (piece cid.Cid, of
 // piece's windowed access rate justifies it. It never blocks the calling
 // request on loading.
 func (oc *offsetCache) serveNotify(piece cid.Cid) {
+	oc.serveNotifyN(piece, 1)
+}
+
+// serveNotifyN is serveNotify for n blocks served at once (bulk retrieval
+// calls it once per piece per request instead of once per block, so bulk
+// traffic carries the same admission weight as single-block traffic).
+func (oc *offsetCache) serveNotifyN(piece cid.Cid, n int64) {
 	key := piece.KeyString()
 	now := time.Now()
 
@@ -191,7 +199,7 @@ func (oc *offsetCache) serveNotify(piece cid.Cid) {
 	if po, ok := oc.pieces[key]; ok {
 		oc.admin.Unlock()
 		// accesses count towards retention regardless of serve path
-		po.hits.bump()
+		po.hits.add(n)
 		return
 	}
 	if _, ok := oc.loading[key]; ok {
@@ -212,7 +220,7 @@ func (oc *offsetCache) serveNotify(piece cid.Cid) {
 		wc = &windowCounter{}
 		oc.candidates[key] = wc
 	}
-	wc.bump()
+	wc.add(n)
 	score := wc.score()
 
 	if score < offsetCacheAdmitMin {
