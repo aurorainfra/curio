@@ -43,14 +43,18 @@ var (
 	ipfsRequestLimiter     = make(chan struct{}, maxParallelRequests)
 	ipfsHeadRequestLimiter = make(chan struct{}, maxParallelRequests/2)
 	pieceRequestLimiter    = make(chan struct{}, maxParallelRequests)
+	// bulk streams each drive up to a 32MiB read buffer and a full
+	// sequential disk stream; a few dozen saturate any deployment's disks
+	bulkRequestLimiter = make(chan struct{}, 32)
 )
 
 type Provider struct {
-	db  *harmonydb.DB
-	bs  *remoteblockstore.RemoteBlockstore
-	fr  *frisbii.HttpIpfs
-	raw *curetr.Handler // fast path for explicit raw single-block requests
-	cpr *cachedreader.CachedPieceReader
+	db   *harmonydb.DB
+	bs   *remoteblockstore.RemoteBlockstore
+	fr   *frisbii.HttpIpfs
+	raw  *curetr.Handler     // fast path for explicit raw single-block requests
+	bulk *curetr.BulkHandler // batched sequential block streaming
+	cpr  *cachedreader.CachedPieceReader
 }
 
 const (
@@ -76,12 +80,28 @@ func NewRetrievalProvider(ctx context.Context, db *harmonydb.DB, idxStore *index
 	lsys := LinkSystemForBlockstore(cbs)
 	fr := frisbii.NewHttpIpfs(ctx, lsys, frisbii.WithBlockHasCheck(cbs.Has))
 
+	// The bulk handler checks the denylist per block itself: bulk requests
+	// carry cids in the body, so the path-based denylist middleware never
+	// sees them, and the blockstore wrapper is bypassed by design (bulk
+	// reads merged ranges through the piece reader, not per-block Gets).
+	denyCheck := func(c cid.Cid) error {
+		denied, ready := df.IsDenied(c)
+		if !ready {
+			return fmt.Errorf("denylist not yet loaded")
+		}
+		if denied {
+			return denylist.ErrBlockDenied
+		}
+		return nil
+	}
+
 	return &Provider{
-		db:  db,
-		bs:  bs,
-		fr:  fr,
-		raw: curetr.NewHandler(cbs),
-		cpr: cpr,
+		db:   db,
+		bs:   bs,
+		fr:   fr,
+		raw:  curetr.NewHandler(cbs),
+		bulk: curetr.NewBulkHandler(bs, cpr, denyCheck),
+		cpr:  cpr,
 	}
 }
 
@@ -267,9 +287,34 @@ func Router(mux *chi.Mux, rp *Provider, df *denylist.Filter) {
 			r.Get(ipfsPrefix+"*", rp.serveIpfs)
 		})
 
+		// Bulk block endpoints. The request carries cids in the body, so
+		// the path-based denylist middleware does not apply — the handler
+		// checks the denylist per block.
+		r.Group(func(r chi.Router) {
+			r.Use(limiterMiddleware(bulkRequestLimiter))
+			r.Post(curetr.BulkBlocksPath, rp.serveBulkBlocks)
+		})
+		r.Get(curetr.BulkInfoPath, rp.serveBulkInfo)
+
 		// Info endpoint without limiter or denylist
 		r.Get(infoPage, handleInfo)
 	})
+}
+
+func (rp *Provider) serveBulkBlocks(w http.ResponseWriter, r *http.Request) {
+	if rp.bulk == nil {
+		http.Error(w, "bulk retrieval not available", http.StatusNotFound)
+		return
+	}
+	rp.bulk.ServeBlocks(w, r)
+}
+
+func (rp *Provider) serveBulkInfo(w http.ResponseWriter, r *http.Request) {
+	if rp.bulk == nil {
+		http.Error(w, "bulk retrieval not available", http.StatusNotFound)
+		return
+	}
+	rp.bulk.ServeInfo(w, r)
 }
 
 // serveIpfs routes explicit raw single-block requests to the curetr fast
