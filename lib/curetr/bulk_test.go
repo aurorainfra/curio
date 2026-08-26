@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/binary"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http/httptest"
@@ -16,6 +17,7 @@ import (
 	"github.com/multiformats/go-multihash"
 	"github.com/stretchr/testify/require"
 
+	"github.com/filecoin-project/curio/deps/config"
 	"github.com/filecoin-project/curio/lib/storiface"
 	"github.com/filecoin-project/curio/market/retrieval/remoteblockstore"
 )
@@ -285,7 +287,7 @@ func requireWindow(t *testing.T, frames []bulkFrame, nBlocks int, window uint64)
 }
 
 func mkBulkHandler(res BulkResolver, prs PieceReaderSource) *BulkHandler {
-	return NewBulkHandler(res, prs, nil)
+	return NewBulkHandler(res, prs, nil, nil)
 }
 
 func TestBulkOrderedRun(t *testing.T) {
@@ -407,7 +409,7 @@ func TestBulkNotFoundAndDenied(t *testing.T) {
 			return fmt.Errorf("denied")
 		}
 		return nil
-	})
+	}, nil)
 
 	req := BulkRequest{Blocks: []cid.Cid{cp.blocks[0], unknown, denied}}
 	code, frames := doBulk(t, h, req)
@@ -542,4 +544,45 @@ func mustMh(t *testing.T, data []byte) []byte {
 	mh, err := multihash.Sum(data, multihash.SHA2_256, -1)
 	require.NoError(t, err)
 	return mh
+}
+
+func TestBulkConfigLimits(t *testing.T) {
+	cp := buildCarPiece(t, "cfglim", []int{300, 300, 300})
+	cfg := &config.BulkRetrievalConfig{
+		// other fields left nil: the handler must fall back to defaults
+		MaxBlocks:            config.NewDynamic(2),
+		MaxWindow:            config.NewDynamic(5),
+		DefaultWindow:        config.NewDynamic(1),
+		AdvertisedMaxStreams: config.NewDynamic(3),
+	}
+	h := NewBulkHandler(newFakeResolver(cp), newFakeReaderSource(cp), nil, cfg)
+
+	// over the configured MaxBlocks
+	code, _ := doBulk(t, h, BulkRequest{Blocks: cp.blocks})
+	require.Equal(t, 400, code)
+
+	// over the configured MaxWindow
+	code, _ = doBulk(t, h, BulkRequest{Blocks: cp.blocks[:1], Window: 6})
+	require.Equal(t, 400, code)
+
+	// within limits
+	code, frames := doBulk(t, h, BulkRequest{Blocks: cp.blocks[:2]})
+	require.Equal(t, 200, code)
+	requireServed(t, frames, map[uint64][]byte{0: cp.payloads[0], 1: cp.payloads[1]}, 2)
+
+	// live retune: the same 3-block request is accepted now
+	cfg.MaxBlocks.Set(3)
+	code, frames = doBulk(t, h, BulkRequest{Blocks: cp.blocks})
+	require.Equal(t, 200, code)
+	requireServed(t, frames,
+		map[uint64][]byte{0: cp.payloads[0], 1: cp.payloads[1], 2: cp.payloads[2]}, 3)
+
+	// /info reflects the live config
+	w := httptest.NewRecorder()
+	h.ServeInfo(w, httptest.NewRequest("GET", BulkInfoPath, nil))
+	var info map[string]any
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &info))
+	require.Equal(t, float64(3), info["maxBlocks"])
+	require.Equal(t, float64(5), info["maxWindow"])
+	require.Equal(t, float64(3), info["maxStreams"])
 }
