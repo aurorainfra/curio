@@ -324,7 +324,7 @@ func attachRouters(ctx context.Context, r *chi.Mux, d *deps.Deps, sd *ServiceDep
 			AdmitAfter:     bc.AdmitAfter,
 		}
 	}
-	rp := retrieval.NewRetrievalProvider(ctx, d.DB, d.IndexStore, d.CachedPieceReader, df, d.Cfg.Market.StorageMarketConfig.Indexing.RetrievalOffsetCacheMemMiB, bcCfg)
+	rp := retrieval.NewRetrievalProvider(ctx, d.DB, d.IndexStore, d.CachedPieceReader, df, d.Cfg.Market.StorageMarketConfig.Indexing.RetrievalOffsetCacheMemMiB, bcCfg, &d.Cfg.HTTP)
 	retrieval.Router(r, rp, df)
 
 	// Attach IPNI

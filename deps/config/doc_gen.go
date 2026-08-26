@@ -84,6 +84,87 @@ block is admitted to the resident set; 0 admits on first access.
 (Default: 1, i.e. blocks are cached on their second access)`,
 		},
 	},
+	"BulkRetrievalConfig": {
+		{
+			Name: "MaxConcurrentStreams",
+			Type: "int",
+
+			Comment: `MaxConcurrentStreams limits concurrently served bulk requests;
+requests over the limit get HTTP 429. Each stream drives one
+sequential disk read pattern with up to a MaxRangeMiB response
+buffer, so this bounds both memory (MaxConcurrentStreams x
+MaxRangeMiB) and disk parallelism. Must be positive. (Default: 32)
+Updates will affect running instances.`,
+		},
+		{
+			Name: "MaxBlocks",
+			Type: "int",
+
+			Comment: `MaxBlocks is the maximum number of blocks accepted in one bulk
+request, advertised to clients via /aurora/bulk/v0/info. Must be
+positive. (Default: 4096)
+Updates will affect running instances.`,
+		},
+		{
+			Name: "MaxWindow",
+			Type: "int",
+
+			Comment: `MaxWindow caps the request-supplied frame window — how far out of
+request order the response stream may run ahead of the lowest
+pending block. Advertised via /info. Must be positive.
+(Default: 256)
+Updates will affect running instances.`,
+		},
+		{
+			Name: "DefaultWindow",
+			Type: "int",
+
+			Comment: `DefaultWindow is the frame window used when a request does not
+specify one. The window is also the scheduling batch: blocks are
+resolved, merged and read in window-sized batches, so a larger
+window means larger merged reads for in-order requests. Must be
+positive; values above MaxWindow are clamped to it. (Default: 64)
+Updates will affect running instances.`,
+		},
+		{
+			Name: "AdvertisedMaxStreams",
+			Type: "int",
+
+			Comment: `AdvertisedMaxStreams is the per-client concurrent stream count
+advertised via /info. Purely advisory to well-behaved clients — the
+server has no client identity to enforce it; the hard global bound
+is MaxConcurrentStreams. Must be positive. (Default: 8)
+Updates will affect running instances.`,
+		},
+		{
+			Name: "MergeGapKiB",
+			Type: "int",
+
+			Comment: `MergeGapKiB: adjacent block reads whose gap is at most this many KiB
+are merged into one sequential range read — over-reading the gap is
+cheaper than another ranged storage request / disk seek. 0 merges
+only exactly adjacent blocks; negative values fall back to the
+default. (Default: 1024)
+Updates will affect running instances.`,
+		},
+		{
+			Name: "MaxRangeMiB",
+			Type: "int",
+
+			Comment: `MaxRangeMiB caps one merged range read, which is the unit of a
+single ranged request to the storage node and of the response read
+buffer. Minimum 1. (Default: 32)
+Updates will affect running instances.`,
+		},
+		{
+			Name: "ResolveParallelism",
+			Type: "int",
+
+			Comment: `ResolveParallelism bounds concurrent per-block index lookups within
+one request scheduling batch. Must be positive. (Default: 64)
+Updates will affect running instances.`,
+		},
+	},
 	"CommitBatchingConfig": {
 		{
 			Name: "BaseFeeThreshold",
@@ -1119,6 +1200,22 @@ Each URL should serve a JSON array of objects with an "anchor" field containing 
 Denylisted CIDs will be rejected with HTTP 451. Requests arriving before denylists are loaded
 will receive HTTP 503. (Default: ["https://badbits.dwebops.pub/denylist.json"])
 Updates will affect running instances.`,
+		},
+		{
+			Name: "RetrievalMaxParallelRequests",
+			Type: "int",
+
+			Comment: `RetrievalMaxParallelRequests limits concurrently served retrieval
+requests on the /ipfs and /piece endpoints; requests over the limit
+get HTTP 429. HEAD requests are limited to half this value. Must be
+positive. Updates apply to running nodes. (Default: 256)
+Updates will affect running instances.`,
+		},
+		{
+			Name: "BulkRetrieval",
+			Type: "BulkRetrievalConfig",
+
+			Comment: `BulkRetrieval tunes the bulk block retrieval endpoint (/aurora/bulk/v0).`,
 		},
 	},
 	"IPNIConfig": {

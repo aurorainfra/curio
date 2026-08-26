@@ -17,6 +17,7 @@ import (
 	"go.opencensus.io/stats"
 	"golang.org/x/sync/errgroup"
 
+	"github.com/filecoin-project/curio/deps/config"
 	"github.com/filecoin-project/curio/lib/storiface"
 	"github.com/filecoin-project/curio/market/retrieval/remoteblockstore"
 )
@@ -36,6 +37,11 @@ import (
 // Since clients send blocks in consumption order and a contiguous write
 // run is stored in offset order, real traffic degenerates to one merged
 // range per slice.
+//
+// Everything here is tunable at runtime through
+// config.BulkRetrievalConfig (HTTP.BulkRetrieval); the constants are the
+// defaults, used when the handler has no config (tests) or a value is out
+// of range.
 const (
 	// bulkMergeGap: adjacent block reads merge into one range if the gap
 	// between them is at most this many bytes (over-read is cheaper than a
@@ -51,9 +57,62 @@ const (
 	// bulkResolveParallelism bounds concurrent per-block index resolves
 	// within a slice.
 	bulkResolveParallelism = 64
-	// bulkMaxRequestBody bounds the POST body (4096 cids + hints is ~330KiB).
-	bulkMaxRequestBody = 1 << 20
 )
+
+// bulkLimits is one request's consistent snapshot of the dynamic config
+// (values must not change mid-request).
+type bulkLimits struct {
+	maxBlocks     int
+	maxWindow     uint64
+	defaultWindow uint64
+	advStreams    int
+	mergeGap      uint64
+	maxRange      uint64
+	resolvePar    int
+}
+
+// dynVal reads a dynamic config value, falling back to def when the field
+// is unset or below minV.
+func dynVal(d *config.Dynamic[int], def, minV int) int {
+	if d == nil {
+		return def
+	}
+	if v := d.Get(); v >= minV {
+		return v
+	}
+	return def
+}
+
+func (h *BulkHandler) limits() bulkLimits {
+	l := bulkLimits{
+		maxBlocks:     BulkMaxBlocks,
+		maxWindow:     BulkMaxWindow,
+		defaultWindow: BulkDefaultWindow,
+		advStreams:    BulkAdvertisedStreams,
+		mergeGap:      bulkMergeGap,
+		maxRange:      bulkMaxRange,
+		resolvePar:    bulkResolveParallelism,
+	}
+	if h.cfg != nil {
+		l.maxBlocks = dynVal(h.cfg.MaxBlocks, BulkMaxBlocks, 1)
+		l.maxWindow = uint64(dynVal(h.cfg.MaxWindow, BulkMaxWindow, 1))
+		l.defaultWindow = uint64(dynVal(h.cfg.DefaultWindow, BulkDefaultWindow, 1))
+		l.advStreams = dynVal(h.cfg.AdvertisedMaxStreams, BulkAdvertisedStreams, 1)
+		l.mergeGap = uint64(dynVal(h.cfg.MergeGapKiB, bulkMergeGap>>10, 0)) << 10
+		l.maxRange = uint64(dynVal(h.cfg.MaxRangeMiB, bulkMaxRange>>20, 1)) << 20
+		l.resolvePar = dynVal(h.cfg.ResolveParallelism, bulkResolveParallelism, 1)
+	}
+	if l.defaultWindow > l.maxWindow {
+		l.defaultWindow = l.maxWindow
+	}
+	return l
+}
+
+// maxRequestBody bounds the POST body: cids are ~40 bytes, hints double
+// that, plus cbor framing slop.
+func (l bulkLimits) maxRequestBody() int64 {
+	return max(1<<20, int64(l.maxBlocks)*128)
+}
 
 // BulkResolver resolves block cids to piece locations; implemented by
 // remoteblockstore.RemoteBlockstore.
@@ -76,21 +135,24 @@ type BulkHandler struct {
 	// deny returns a non-nil error for blocks that must not be served
 	// (denylisted, or the denylist is not loaded yet); nil disables checks.
 	deny func(cid.Cid) error
+	// cfg holds the live-tunable limits; nil uses the package defaults.
+	cfg *config.BulkRetrievalConfig
 }
 
-func NewBulkHandler(res BulkResolver, prs PieceReaderSource, deny func(cid.Cid) error) *BulkHandler {
-	return &BulkHandler{res: res, prs: prs, deny: deny}
+func NewBulkHandler(res BulkResolver, prs PieceReaderSource, deny func(cid.Cid) error, cfg *config.BulkRetrievalConfig) *BulkHandler {
+	return &BulkHandler{res: res, prs: prs, deny: deny, cfg: cfg}
 }
 
 // ServeInfo answers the capability probe.
 func (h *BulkHandler) ServeInfo(w http.ResponseWriter, _ *http.Request) {
+	lim := h.limits()
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(map[string]any{
 		"version":    BulkProtoVersion,
 		"addressing": []string{"cid"},
-		"maxBlocks":  BulkMaxBlocks,
-		"maxWindow":  BulkMaxWindow,
-		"maxStreams": BulkAdvertisedStreams,
+		"maxBlocks":  lim.maxBlocks,
+		"maxWindow":  lim.maxWindow,
+		"maxStreams": lim.advStreams,
 	})
 }
 
@@ -106,19 +168,21 @@ func (h *BulkHandler) ServeBlocks(w http.ResponseWriter, r *http.Request) {
 	}()
 	stats.Record(ctx, BulkRequestCount.M(1))
 
+	lim := h.limits()
+
 	var req BulkRequest
-	if err := req.UnmarshalCBOR(bufio.NewReader(http.MaxBytesReader(w, r.Body, bulkMaxRequestBody))); err != nil {
+	if err := req.UnmarshalCBOR(bufio.NewReader(http.MaxBytesReader(w, r.Body, lim.maxRequestBody()))); err != nil {
 		stats.Record(ctx, Bulk400ResponseCount.M(1))
 		http.Error(w, fmt.Sprintf("decoding request: %s", err), http.StatusBadRequest)
 		return
 	}
-	if err := validateBulkRequest(&req); err != nil {
+	if err := validateBulkRequest(&req, lim); err != nil {
 		stats.Record(ctx, Bulk400ResponseCount.M(1))
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
 	if req.Window == 0 {
-		req.Window = BulkDefaultWindow
+		req.Window = lim.defaultWindow
 	}
 	stats.Record(ctx, BulkBlocksRequested.M(int64(len(req.Blocks))))
 
@@ -128,6 +192,7 @@ func (h *BulkHandler) ServeBlocks(w http.ResponseWriter, r *http.Request) {
 	flusher, _ := w.(http.Flusher)
 	s := &bulkServe{
 		h:       h,
+		lim:     lim,
 		req:     &req,
 		w:       w,
 		flusher: flusher,
@@ -137,12 +202,12 @@ func (h *BulkHandler) ServeBlocks(w http.ResponseWriter, r *http.Request) {
 	s.run(ctx)
 }
 
-func validateBulkRequest(req *BulkRequest) error {
-	if len(req.Blocks) == 0 || len(req.Blocks) > BulkMaxBlocks {
-		return fmt.Errorf("blocks count %d out of range [1, %d]", len(req.Blocks), BulkMaxBlocks)
+func validateBulkRequest(req *BulkRequest, lim bulkLimits) error {
+	if len(req.Blocks) == 0 || len(req.Blocks) > lim.maxBlocks {
+		return fmt.Errorf("blocks count %d out of range [1, %d]", len(req.Blocks), lim.maxBlocks)
 	}
-	if req.Window > BulkMaxWindow {
-		return fmt.Errorf("window %d exceeds maximum %d", req.Window, BulkMaxWindow)
+	if req.Window > lim.maxWindow {
+		return fmt.Errorf("window %d exceeds maximum %d", req.Window, lim.maxWindow)
 	}
 	if len(req.Pieces) != 0 && len(req.Pieces) != len(req.Blocks) {
 		return fmt.Errorf("pieces count %d does not match blocks count %d", len(req.Pieces), len(req.Blocks))
@@ -177,6 +242,7 @@ type failedMember struct {
 
 type bulkServe struct {
 	h       *BulkHandler
+	lim     bulkLimits
 	req     *BulkRequest
 	w       http.ResponseWriter
 	flusher http.Flusher
@@ -222,7 +288,7 @@ func (s *bulkServe) serveSlice(ctx context.Context, base, end int) {
 
 	resolveStart := time.Now()
 	var eg errgroup.Group
-	eg.SetLimit(bulkResolveParallelism)
+	eg.SetLimit(s.lim.resolvePar)
 	for i := base; i < end; i++ {
 		c := s.req.Blocks[i]
 		sl := &slots[i-base]
@@ -361,10 +427,10 @@ func (s *bulkServe) readBucket(ctx context.Context, piece cid.Cid, members []bul
 				bound = d
 			}
 		}
-		if bound == 0 || bound > bulkMaxRange {
+		if bound == 0 || bound > s.lim.maxRange {
 			// also a hard cap: a corrupt indexed size must not translate
 			// into an unbounded read buffer
-			bound = bulkUnknownTailBound
+			bound = min(bulkUnknownTailBound, s.lim.maxRange)
 		}
 		if m.offset >= ph.size {
 			failed = append(failed, failedMember{m: m, err: fmt.Errorf("offset %d beyond piece size %d", m.offset, ph.size)})
@@ -385,8 +451,8 @@ func (s *bulkServe) readBucket(ctx context.Context, piece cid.Cid, members []bul
 		rangeEnd := rangeStart + members[start].bound
 		next := start + 1
 		for next < len(members) &&
-			members[next].offset <= rangeEnd+bulkMergeGap &&
-			members[next].offset+members[next].bound-rangeStart <= bulkMaxRange {
+			members[next].offset <= rangeEnd+s.lim.mergeGap &&
+			members[next].offset+members[next].bound-rangeStart <= s.lim.maxRange {
 			if e := members[next].offset + members[next].bound; e > rangeEnd {
 				rangeEnd = e
 			}

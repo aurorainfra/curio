@@ -20,6 +20,7 @@ import (
 	"go.opencensus.io/tag"
 
 	"github.com/filecoin-project/curio/build"
+	"github.com/filecoin-project/curio/deps/config"
 	"github.com/filecoin-project/curio/harmony/harmonydb"
 	"github.com/filecoin-project/curio/lib/cachedreader"
 	"github.com/filecoin-project/curio/lib/curetr"
@@ -36,17 +37,70 @@ var log = logging.Logger("retrievals")
 // activeRequestCounters stores atomic counters for active requests per path+method
 var activeRequestCounters sync.Map // map[string]*atomic.Int64
 
-// Request limiters using buffered channels as semaphores
-const maxParallelRequests = 256
-
-var (
-	ipfsRequestLimiter     = make(chan struct{}, maxParallelRequests)
-	ipfsHeadRequestLimiter = make(chan struct{}, maxParallelRequests/2)
-	pieceRequestLimiter    = make(chan struct{}, maxParallelRequests)
-	// bulk streams each drive up to a 32MiB read buffer and a full
+// Fallback limiter caps, used when no config is wired (tests) or a
+// configured value is not positive. Live values come from
+// HTTP.RetrievalMaxParallelRequests and HTTP.BulkRetrieval.MaxConcurrentStreams.
+const (
+	defaultMaxParallelRequests = 256
+	// bulk streams each drive up to a maxRange read buffer and a full
 	// sequential disk stream; a few dozen saturate any deployment's disks
-	bulkRequestLimiter = make(chan struct{}, 32)
+	defaultBulkStreams = 32
 )
+
+// dynLimiter rejects requests over a live-readable concurrency limit with
+// HTTP 429 (non-blocking, same semantics as the old channel semaphores,
+// but the limit can change at runtime).
+type dynLimiter struct {
+	active atomic.Int64
+	limit  func() int
+}
+
+func (l *dynLimiter) middleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if l.active.Add(1) > int64(l.limit()) {
+			l.active.Add(-1)
+			log.Warnw("Request limit reached", "method", r.Method, "path", r.URL.Path)
+			w.WriteHeader(http.StatusTooManyRequests)
+			_, _ = w.Write([]byte("Service temporarily unavailable: too many concurrent requests"))
+			return
+		}
+		defer l.active.Add(-1)
+		next.ServeHTTP(w, r)
+	})
+}
+
+type limiters struct {
+	ipfs, ipfsHead, piece, bulk *dynLimiter
+}
+
+func newLimiters(httpCfg *config.HTTPConfig) limiters {
+	retr := func() int { return defaultMaxParallelRequests }
+	bulk := func() int { return defaultBulkStreams }
+	if httpCfg != nil {
+		if d := httpCfg.RetrievalMaxParallelRequests; d != nil {
+			retr = func() int {
+				if v := d.Get(); v > 0 {
+					return v
+				}
+				return defaultMaxParallelRequests
+			}
+		}
+		if d := httpCfg.BulkRetrieval.MaxConcurrentStreams; d != nil {
+			bulk = func() int {
+				if v := d.Get(); v > 0 {
+					return v
+				}
+				return defaultBulkStreams
+			}
+		}
+	}
+	return limiters{
+		ipfs:     &dynLimiter{limit: retr},
+		ipfsHead: &dynLimiter{limit: func() int { return max(1, retr()/2) }},
+		piece:    &dynLimiter{limit: retr},
+		bulk:     &dynLimiter{limit: bulk},
+	}
+}
 
 type Provider struct {
 	db   *harmonydb.DB
@@ -55,6 +109,7 @@ type Provider struct {
 	raw  *curetr.Handler     // fast path for explicit raw single-block requests
 	bulk *curetr.BulkHandler // batched sequential block streaming
 	cpr  *cachedreader.CachedPieceReader
+	lim  limiters
 }
 
 const (
@@ -63,7 +118,7 @@ const (
 	infoPage    = "/info"
 )
 
-func NewRetrievalProvider(ctx context.Context, db *harmonydb.DB, idxStore *indexstore.IndexStore, cpr *cachedreader.CachedPieceReader, df *denylist.Filter, offsetCacheMemMiB int, bcCfg *blockcache.Config) *Provider {
+func NewRetrievalProvider(ctx context.Context, db *harmonydb.DB, idxStore *indexstore.IndexStore, cpr *cachedreader.CachedPieceReader, df *denylist.Filter, offsetCacheMemMiB int, bcCfg *blockcache.Config, httpCfg *config.HTTPConfig) *Provider {
 	bs := remoteblockstore.NewRemoteBlockstore(idxStore, db, cpr, offsetCacheMemMiB)
 
 	// Wrap the blockstore with denylist filtering so every block fetch
@@ -95,13 +150,19 @@ func NewRetrievalProvider(ctx context.Context, db *harmonydb.DB, idxStore *index
 		return nil
 	}
 
+	var bulkCfg *config.BulkRetrievalConfig
+	if httpCfg != nil {
+		bulkCfg = &httpCfg.BulkRetrieval
+	}
+
 	return &Provider{
 		db:   db,
 		bs:   bs,
 		fr:   fr,
 		raw:  curetr.NewHandler(cbs),
-		bulk: curetr.NewBulkHandler(bs, cpr, denyCheck),
+		bulk: curetr.NewBulkHandler(bs, cpr, denyCheck, bulkCfg),
 		cpr:  cpr,
+		lim:  newLimiters(httpCfg),
 	}
 }
 
@@ -110,7 +171,8 @@ func NewRetrievalProviderWithLinkSystem(ctx context.Context, lsys ipld.LinkSyste
 	fr := frisbii.NewHttpIpfs(ctx, lsys, frisbii.WithBlockHasCheck(withBlockHasCheck))
 
 	return &Provider{
-		fr: fr,
+		fr:  fr,
+		lim: newLimiters(nil),
 	}
 }
 
@@ -199,27 +261,6 @@ func decrementActiveRequests(ctx context.Context, counter *atomic.Int64, pathPre
 	}, remoteblockstore.HttpActiveRequests.M(newValue))
 }
 
-// limiterMiddleware limits concurrent requests to the retrieval service
-func limiterMiddleware(limiter chan struct{}) func(http.Handler) http.Handler {
-	return func(next http.Handler) http.Handler {
-		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			// Try to acquire semaphore (non-blocking)
-			select {
-			case limiter <- struct{}{}:
-				// Successfully acquired, ensure we release when done
-				defer func() { <-limiter }()
-				// Continue to next handler
-				next.ServeHTTP(w, r)
-			default:
-				// Limit reached, return 429
-				log.Warnw("Request limit reached", "method", r.Method, "path", r.URL.Path)
-				w.WriteHeader(http.StatusTooManyRequests)
-				_, _ = w.Write([]byte("Service temporarily unavailable: too many concurrent requests"))
-			}
-		})
-	}
-}
-
 // metricsMiddleware records HTTP metrics for requests
 func metricsMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -269,7 +310,7 @@ func Router(mux *chi.Mux, rp *Provider, df *denylist.Filter) {
 		// Piece endpoint with denylist and limiter
 		r.Group(func(r chi.Router) {
 			r.Use(denylist.Middleware(df))
-			r.Use(limiterMiddleware(pieceRequestLimiter))
+			r.Use(rp.lim.piece.middleware)
 			r.Get(piecePrefix+"{cid}", rp.handleByPieceCid)
 			r.Head(piecePrefix+"{cid}", rp.handleByPieceCid)
 		})
@@ -277,13 +318,13 @@ func Router(mux *chi.Mux, rp *Provider, df *denylist.Filter) {
 		// IPFS endpoints with denylist and limiter
 		r.Group(func(r chi.Router) {
 			r.Use(denylist.Middleware(df))
-			r.Use(limiterMiddleware(ipfsHeadRequestLimiter))
+			r.Use(rp.lim.ipfsHead.middleware)
 			r.Head(ipfsPrefix+"*", rp.serveIpfs)
 		})
 
 		r.Group(func(r chi.Router) {
 			r.Use(denylist.Middleware(df))
-			r.Use(limiterMiddleware(ipfsRequestLimiter))
+			r.Use(rp.lim.ipfs.middleware)
 			r.Get(ipfsPrefix+"*", rp.serveIpfs)
 		})
 
@@ -291,7 +332,7 @@ func Router(mux *chi.Mux, rp *Provider, df *denylist.Filter) {
 		// the path-based denylist middleware does not apply — the handler
 		// checks the denylist per block.
 		r.Group(func(r chi.Router) {
-			r.Use(limiterMiddleware(bulkRequestLimiter))
+			r.Use(rp.lim.bulk.middleware)
 			r.Post(curetr.BulkBlocksPath, rp.serveBulkBlocks)
 		})
 		r.Get(curetr.BulkInfoPath, rp.serveBulkInfo)
