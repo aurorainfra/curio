@@ -13,6 +13,7 @@ import (
 	commcid "github.com/filecoin-project/go-fil-commcid"
 
 	"github.com/filecoin-project/curio/lib/proof"
+	"github.com/filecoin-project/curio/lib/proofpaths"
 	"github.com/filecoin-project/curio/lib/storiface"
 	"github.com/filecoin-project/curio/lib/supraffi"
 	"github.com/filecoin-project/curio/lib/tarutil"
@@ -166,8 +167,14 @@ func (sb *SealCalls) getCachePath(ctx context.Context, s storiface.SectorRef, ft
 	if err == nil {
 		localPath := storiface.PathByType(paths, ft)
 		if localPath != "" {
-			// Cache is available locally
-			return localPath, func() {}, nil
+			// Cache is available locally. Only use it when it is a complete finalized
+			// cache; seal paths can hold partial caches left by crashed pipeline runs,
+			// and the remote lookup below prefers store copies and skips such leftovers.
+			missing, err := proofpaths.FinCacheDirMissing(s.ProofType, localPath)
+			if err == nil && len(missing) == 0 {
+				return localPath, func() {}, nil
+			}
+			log.Warnw("local cache copy not usable, fetching minimal cache instead", "sector", s.ID, "type", ft, "path", localPath, "missing", missing, "error", err)
 		}
 	}
 

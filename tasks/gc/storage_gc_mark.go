@@ -474,6 +474,13 @@ func (s *StorageGCMark) Do(taskID harmonytask.TaskID, stillOwned func() bool) (d
 		return false, err
 	}
 
+	/*
+		STAGE 4: Mark files in seal-only paths which have a complete copy in long-term storage
+	*/
+	if err := s.markSealPathLeftovers(ctx, storageSectors); err != nil {
+		return false, xerrors.Errorf("seal path leftover stage: %w", err)
+	}
+
 	return true, nil
 }
 
