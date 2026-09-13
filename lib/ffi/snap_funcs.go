@@ -127,6 +127,8 @@ func (sb *SealCalls) EncodeUpdate(
 	keyPath := filepath.Join(paths.UpdateCache, "cu-sector-key.dat")           // can this be a named pipe - no, mmap in proofs
 	keyCachePath := filepath.Join(paths.UpdateCache, "cu-sector-key-fincache") // some temp copy (finalized cache directory)
 	var keyFile *os.File
+	var keyCacheSource storiface.ID // storage path the sector key cache was read from
+	var ccCommC [32]byte            // CommC of the sector key, carried over to the updated replica
 
 	prepareKeyStart := time.Now()
 
@@ -183,7 +185,7 @@ func (sb *SealCalls) EncodeUpdate(
 
 		// fetch cache
 		var buf bytes.Buffer // usually 73.2 MiB
-		err = sb.Sectors.storage.ReadMinCacheInto(ctx, sector, storiface.FTCache, &buf)
+		keyCacheSource, err = sb.Sectors.storage.ReadMinCache(ctx, sector, storiface.FTCache, &buf)
 		if err != nil {
 			return cid.Undef, cid.Undef, xerrors.Errorf("reading cache: %w", err)
 		}
@@ -195,6 +197,26 @@ func (sb *SealCalls) EncodeUpdate(
 
 		if err := proof.EnsureTauxForType(sector.ProofType, keyCachePath); err != nil {
 			return cid.Cid{}, cid.Cid{}, xerrors.Errorf("ensuring t_aux exists: %w", err)
+		}
+
+		// The cache must describe the on-chain sector key. A complete-looking cache
+		// from another sealing run of the same sector number (a seal-path leftover)
+		// would otherwise only fail at proof generation, after the whole encode.
+		var ccCommRLast [32]byte
+		ccCommC, ccCommRLast, err = proof.ReadPAux(keyCachePath)
+		if err != nil {
+			return cid.Undef, cid.Undef, xerrors.Errorf("read cc p aux: %w", err)
+		}
+		ccCommR, err := commitment.CommR(ccCommC, ccCommRLast)
+		if err != nil {
+			return cid.Undef, cid.Undef, xerrors.Errorf("compute cc comm r: %w", err)
+		}
+		ccSealedCid, err := commcid.ReplicaCommitmentV1ToCID(ccCommR[:])
+		if err != nil {
+			return cid.Undef, cid.Undef, xerrors.Errorf("compute cc sealed cid: %w", err)
+		}
+		if ccSealedCid != sectorKeyCid {
+			return cid.Undef, cid.Undef, xerrors.Errorf("sector key cache from storage %s is for a different replica: commR %s, want %s", keyCacheSource, ccSealedCid, sectorKeyCid)
 		}
 	}
 
@@ -249,9 +271,17 @@ func (sb *SealCalls) EncodeUpdate(
 
 	// STEP 1: SupraEncode
 
-	sectorKeyReader, err := sb.Sectors.storage.ReaderSeq(ctx, sector, storiface.FTSealed)
+	// Read the key from the most trustworthy copy, preferably the storage path the
+	// cache came from: a leftover sealed file on a sealing path does not match the
+	// tree-r-last of the store copy, and the vanilla update proofs would fail.
+	sectorKeyReader, keyDataSource, err := sb.Sectors.storage.ReaderSeqTrusted(ctx, sector, storiface.FTSealed, keyCacheSource)
 	if err != nil {
 		return cid.Undef, cid.Undef, xerrors.Errorf("getting sealed sector reader: %w", err)
+	}
+	if keyDataSource != keyCacheSource {
+		log.Warnw("sector key and its cache come from different storage paths", "sectorID", sector.ID, "taskID", taskID, "keyStorage", keyDataSource, "cacheStorage", keyCacheSource)
+	} else {
+		log.Infow("sector key source", "sectorID", sector.ID, "taskID", taskID, "storage", keyDataSource)
 	}
 
 	// copy r into keyFile
@@ -313,11 +343,6 @@ func (sb *SealCalls) EncodeUpdate(
 	_, updateCommRLast, err := proof.ReadPAux(paths.UpdateCache)
 	if err != nil {
 		return cid.Undef, cid.Undef, xerrors.Errorf("read update p aux: %w", err)
-	}
-
-	ccCommC, _, err := proof.ReadPAux(keyCachePath)
-	if err != nil {
-		return cid.Undef, cid.Undef, xerrors.Errorf("read cc p aux: %w", err)
 	}
 
 	if err := proof.WritePAux(paths.UpdateCache, ccCommC, updateCommRLast); err != nil {
