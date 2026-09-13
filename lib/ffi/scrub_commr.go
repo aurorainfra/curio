@@ -5,7 +5,6 @@ import (
 	"context"
 	"io"
 	"os"
-	"path/filepath"
 	"time"
 
 	"github.com/ipfs/go-cid"
@@ -15,6 +14,7 @@ import (
 
 	"github.com/filecoin-project/curio/lib/ffiselect"
 	"github.com/filecoin-project/curio/lib/proof"
+	"github.com/filecoin-project/curio/lib/proofpaths"
 	"github.com/filecoin-project/curio/lib/storiface"
 	"github.com/filecoin-project/curio/lib/supraffi"
 	"github.com/filecoin-project/curio/lib/tarutil"
@@ -169,11 +169,14 @@ func (sb *SealCalls) getCachePath(ctx context.Context, s storiface.SectorRef, ft
 	if err == nil {
 		localPath := storiface.PathByType(paths, ft)
 		if localPath != "" {
-			if verr := validateCacheDir(localPath); verr == nil {
+			// Cache is available locally. Only use it when it is a complete finalized
+			// cache; seal paths can hold partial caches left by crashed pipeline runs,
+			// and the remote lookup below prefers store copies and skips such leftovers.
+			missing, err := proofpaths.FinCacheDirMissing(s.ProofType, localPath)
+			if err == nil && len(missing) == 0 {
 				return localPath, func() {}, nil
-			} else {
-				log.Warnw("local cache unusable, falling back to remote", "sector", s.ID, "type", ft, "path", localPath, "err", verr)
 			}
+			log.Warnw("local cache copy not usable, fetching minimal cache instead", "sector", s.ID, "type", ft, "path", localPath, "missing", missing, "error", err)
 		}
 	}
 
@@ -217,20 +220,6 @@ func validateSectorFile(path string, ssize uint64) error {
 	}
 	if uint64(st.Size()) != ssize {
 		return xerrors.Errorf("%s size %d != expected %d", path, st.Size(), ssize)
-	}
-	return nil
-}
-
-func validateCacheDir(path string) error {
-	st, err := os.Stat(path)
-	if err != nil {
-		return err
-	}
-	if !st.IsDir() {
-		return xerrors.Errorf("%s is not a directory", path)
-	}
-	if _, err := os.Stat(filepath.Join(path, "p_aux")); err != nil {
-		return xerrors.Errorf("failed to stat p_aux in %x: %w", path, err)
 	}
 	return nil
 }

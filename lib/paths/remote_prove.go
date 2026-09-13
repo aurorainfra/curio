@@ -3,12 +3,14 @@
 package paths
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
 	"net/url"
+	"path/filepath"
 	"sort"
 	"strings"
 
@@ -18,25 +20,23 @@ import (
 
 	"github.com/filecoin-project/go-state-types/abi"
 
+	"github.com/filecoin-project/curio/lib/proofpaths"
 	"github.com/filecoin-project/curio/lib/storiface"
 	"github.com/filecoin-project/curio/lib/tarutil"
 )
 
-// ReadMinCacheInto reads finalized-like (few MiB) cache files into the target dir
+// ReadMinCacheInto writes a tar with the finalized-like (few MiB) cache files
+// of the sector (p_aux, t_aux, tree-r-last partitions) into w.
+//
+// Copies are tried in order of preference: long-term storage (CanStore) paths
+// first, then primary copies, then local before remote, then by weight. A copy
+// which lacks the essential finalized-cache files is skipped: sealing paths can
+// hold partial caches left behind by crashed pipeline runs, and using one of
+// those would otherwise only fail much later, e.g. at the end of a snap encode.
 func (r *Remote) ReadMinCacheInto(ctx context.Context, s storiface.SectorRef, ft storiface.SectorFileType, w io.Writer) error {
-	paths, _, err := r.local.AcquireSector(ctx, s, ft, storiface.FTNone, storiface.PathStorage, storiface.AcquireMove)
-	if err != nil {
-		return xerrors.Errorf("acquire local: %w", err)
-	}
-
-	path := storiface.PathByType(paths, ft)
-	if path != "" {
-		return readMinCache(path, w)
-	}
-
 	si, err := r.index.StorageFindSector(ctx, s.ID, ft, 0, false)
 	if err != nil {
-		log.Debugf("Reader, did not find file on any of the workers %s (%s)", path, ft.String())
+		log.Debugf("Reader, did not find file on any of the workers %s (%s)", s.ID, ft.String())
 		return err
 	}
 
@@ -44,11 +44,41 @@ func (r *Remote) ReadMinCacheInto(ctx context.Context, s storiface.SectorRef, ft
 		return xerrors.Errorf("failed to read sector %v from remote(%d): %w", s, ft, storiface.ErrSectorNotFound)
 	}
 
-	sort.Slice(si, func(i, j int) bool {
-		return si[i].Weight > si[j].Weight
+	localPaths := r.localPathsByID(ctx)
+
+	sort.SliceStable(si, func(i, j int) bool {
+		a, b := si[i], si[j]
+		if a.CanStore != b.CanStore {
+			return a.CanStore
+		}
+		if a.Primary != b.Primary {
+			return a.Primary
+		}
+		_, aLocal := localPaths[a.ID]
+		_, bLocal := localPaths[b.ID]
+		if aLocal != bLocal {
+			return aLocal
+		}
+		return a.Weight > b.Weight
 	})
 
 	for _, info := range si {
+		if local, ok := localPaths[info.ID]; ok {
+			dir := filepath.Join(local, ft.String(), storiface.SectorName(s.ID))
+
+			fst, err := statSectorFile(dir, nil)
+			if err != nil {
+				log.Warnw("stat local cache copy", "sector", s.ID, "type", ft, "storage", info.ID, "path", dir, "error", err)
+				continue
+			}
+			if missing := proofpaths.FinCacheMissing(s.ProofType, fst.Files); !fst.IsDir || len(missing) > 0 {
+				log.Warnw("skipping incomplete local cache copy", "sector", s.ID, "type", ft, "storage", info.ID, "path", dir, "missing", missing)
+				continue
+			}
+
+			return readMinCache(dir, w)
+		}
+
 		for _, u := range info.URLs {
 			purl, err := url.Parse(u)
 			if err != nil {
@@ -57,32 +87,70 @@ func (r *Remote) ReadMinCacheInto(ctx context.Context, s storiface.SectorRef, ft
 			}
 
 			purl.RawQuery = "mincache=true"
-
 			u = purl.String()
 
-			rd, err := r.ReadRemote(ctx, u, 0, 0)
+			data, err := r.readRemoteAll(ctx, u)
 			if err != nil {
 				log.Warnw("reading from remote", "url", u, "error", err)
 				continue
 			}
 
-			_, err = io.Copy(w, rd)
-
-			if cerr := rd.Close(); cerr != nil {
-				log.Errorf("failed to close reader: %v", err)
-				continue
-			}
-
+			files, err := tarutil.TarFileSizes(bytes.NewReader(data))
 			if err != nil {
-				log.Warnw("copying from remote", "url", u, "error", err)
+				log.Warnw("listing remote cache tar", "url", u, "error", err)
+				continue
+			}
+			if missing := proofpaths.FinCacheMissing(s.ProofType, files); len(missing) > 0 {
+				log.Warnw("skipping incomplete remote cache copy", "sector", s.ID, "type", ft, "storage", info.ID, "url", u, "missing", missing)
 				continue
 			}
 
-			return nil
+			_, err = w.Write(data)
+			return err
 		}
 	}
 
-	return xerrors.Errorf("failed to read minimal sector cache %v from remote(%d): %w", s, ft, storiface.ErrSectorNotFound)
+	return xerrors.Errorf("failed to read a complete minimal sector cache %v from any of %d copies (%d): %w", s, len(si), ft, storiface.ErrSectorNotFound)
+}
+
+// readRemoteAll fetches url into memory.
+func (r *Remote) readRemoteAll(ctx context.Context, url string) ([]byte, error) {
+	rd, err := r.ReadRemote(ctx, url, 0, 0)
+	if err != nil {
+		return nil, err
+	}
+
+	data, err := io.ReadAll(rd)
+	if cerr := rd.Close(); err == nil && cerr != nil {
+		err = xerrors.Errorf("closing remote reader: %w", cerr)
+	}
+	if err != nil {
+		return nil, err
+	}
+
+	return data, nil
+}
+
+// localPathsByID maps the IDs of storage paths local to this node to their root directories.
+func (r *Remote) localPathsByID(ctx context.Context) map[storiface.ID]string {
+	ll, ok := r.local.(interface {
+		Local(ctx context.Context) ([]storiface.StoragePath, error)
+	})
+	if !ok {
+		return nil
+	}
+
+	lps, err := ll.Local(ctx)
+	if err != nil {
+		log.Warnw("listing local storage paths", "error", err)
+		return nil
+	}
+
+	out := make(map[storiface.ID]string, len(lps))
+	for _, lp := range lps {
+		out[lp.ID] = lp.LocalPath
+	}
+	return out
 }
 
 func readMinCache(dir string, writer io.Writer) error {

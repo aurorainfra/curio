@@ -183,3 +183,65 @@ class ApproveAllButton extends LitElement {
     }
 }
 customElements.define('approve-all-button', ApproveAllButton);
+
+class StorageGCMarkSummary extends LitElement {
+    static properties = {
+        data: { type: Array },
+    };
+
+    constructor() {
+        super();
+        this.data = [];
+        this.loadData();
+    }
+
+    async loadData() {
+        this.data = await RPCCall('StorageGCMarkSummary') || [];
+        this.requestUpdate();
+    }
+
+    render() {
+        const total = this.data.reduce((n, e) => n + e.Count, 0);
+        const approved = this.data.reduce((n, e) => n + e.Approved, 0);
+
+        return html`
+            <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/css/bootstrap.min.css" rel="stylesheet" integrity="sha384-1BmE4kWBq78iYhFldvKuhfTAU6auU8tT94WrHftjDbrCEXSU1oBoqyl2QvZ6jIW3" crossorigin="anonymous">
+            <link rel="stylesheet" href="/ux/main.css" onload="document.body.style.visibility = 'initial'">
+            <table class="table table-dark">
+                <thead>
+                <tr>
+                    <th>Storage Path</th>
+                    <th>Storage Type</th>
+                    <th>File Type</th>
+                    <th>Marked</th>
+                    <th>Approved</th>
+                </tr>
+                </thead>
+                <tbody>
+                ${this.data.length === 0 ? html`
+                    <tr><td colspan="5">No files marked for GC</td></tr>
+                ` : this.data.map(entry => html`
+                    <tr>
+                        <td>
+                            <div><a href="/pages/storage_path/?id=${entry.StorageID}">${entry.StorageID}</a></div>
+                            <div>${entry.Urls}</div>
+                        </td>
+                        <td>${entry.PathType}</td>
+                        <td>${entry.TypeName}</td>
+                        <td>${entry.Count}</td>
+                        <td>${entry.Approved}</td>
+                    </tr>
+                `)}
+                </tbody>
+                <tfoot>
+                <tr>
+                    <th colspan="3">Total</th>
+                    <th>${total}</th>
+                    <th>${approved}</th>
+                </tr>
+                </tfoot>
+            </table>
+        `;
+    }
+}
+customElements.define('gc-marks-summary', StorageGCMarkSummary);

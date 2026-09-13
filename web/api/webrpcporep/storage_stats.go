@@ -330,21 +330,8 @@ func (a *PoRep) StorageGCMarks(ctx context.Context, miner *string, sectorNum *in
 
 	for i, m := range marks {
 		marks[i].TypeName = storiface.SectorFileType(m.FileType).String()
-
-		var pathRole []string
-		if m.CanSeal {
-			pathRole = append(pathRole, "Scratch")
-		}
-		if m.CanStore {
-			pathRole = append(pathRole, "Store")
-		}
-		marks[i].PathType = strings.Join(pathRole, "/")
-
-		us := paths.UrlsFromString(m.Urls)
-		us = lo.Map(us, func(u string, _ int) string {
-			return must.One(url.Parse(u)).Host
-		})
-		marks[i].Urls = strings.Join(us, ", ")
+		marks[i].PathType = storagePathRole(m.CanSeal, m.CanStore)
+		marks[i].Urls = storageUrlHosts(m.Urls)
 		maddr, ok := minerMap[marks[i].Actor]
 		if !ok {
 			maddr, err = address.NewIDAddress(uint64(marks[i].Actor))
@@ -360,6 +347,74 @@ func (a *PoRep) StorageGCMarks(ctx context.Context, miner *string, sectorNum *in
 		Marks: marks,
 		Total: total,
 	}, nil
+}
+
+// storagePathRole describes what a storage path is used for, as shown in the UI.
+func storagePathRole(canSeal, canStore bool) string {
+	var pathRole []string
+	if canSeal {
+		pathRole = append(pathRole, "Scratch")
+	}
+	if canStore {
+		pathRole = append(pathRole, "Store")
+	}
+	return strings.Join(pathRole, "/")
+}
+
+// storageUrlHosts reduces a storage path's comma-separated URL list to its hosts.
+func storageUrlHosts(urls string) string {
+	if urls == "" {
+		return ""
+	}
+	us := paths.UrlsFromString(urls)
+	us = lo.Map(us, func(u string, _ int) string {
+		return must.One(url.Parse(u)).Host
+	})
+	return strings.Join(us, ", ")
+}
+
+type StorageGCMarkSummary struct {
+	StorageID string `db:"storage_id"`
+	FileType  int64  `db:"sector_filetype"`
+	Count     int64  `db:"count"`
+	Approved  int64  `db:"approved"`
+
+	CanSeal  bool   `db:"can_seal"`
+	CanStore bool   `db:"can_store"`
+	Urls     string `db:"urls"`
+
+	// db ignored
+	TypeName string `db:"-"`
+	PathType string `db:"-"`
+}
+
+// StorageGCMarkSummary aggregates the files marked for removal by storage path and file type.
+func (a *PoRep) StorageGCMarkSummary(ctx context.Context) ([]*StorageGCMarkSummary, error) {
+	var rows []*StorageGCMarkSummary
+	err := a.Deps.DB.Select(ctx, &rows, `
+		SELECT
+		    m.storage_id,
+		    m.sector_filetype,
+		    COUNT(*) AS count,
+		    COUNT(*) FILTER (WHERE m.approved) AS approved,
+		    COALESCE(sl.can_seal, FALSE) AS can_seal,
+		    COALESCE(sl.can_store, FALSE) AS can_store,
+		    COALESCE(sl.urls, '') AS urls
+		FROM storage_removal_marks m
+		    LEFT JOIN storage_path sl ON m.storage_id = sl.storage_id
+		GROUP BY m.storage_id, m.sector_filetype, sl.can_seal, sl.can_store, sl.urls
+		ORDER BY can_store, can_seal DESC, m.storage_id, m.sector_filetype`)
+	if err != nil {
+		return nil, xerrors.Errorf("querying storage removal mark summary: %w", err)
+	}
+
+	for _, r := range rows {
+		r.TypeName = storiface.SectorFileType(r.FileType).String()
+		r.PathType = storagePathRole(r.CanSeal, r.CanStore)
+		r.Urls = storageUrlHosts(r.Urls)
+	}
+
+	return rows, nil
 }
 
 func (a *PoRep) StorageGCApprove(ctx context.Context, actor int64, sectorNum int64, fileType int64, storageID string) error {

@@ -181,6 +181,13 @@ func (handler *FetchHandler) remoteGetSector(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
+	// ?stat=true describes the file/directory (size, or the files inside a cache
+	// directory) instead of streaming it; used to verify that a copy is complete.
+	if _, ok := r.URL.Query()["stat"]; ok {
+		handler.serveSectorFileStat(w, path, stat)
+		return
+	}
+
 	if stat.IsDir() {
 		if _, has := r.Header["Range"]; has {
 			log.Error("Range not supported on directories")
@@ -208,6 +215,23 @@ func (handler *FetchHandler) remoteGetSector(w http.ResponseWriter, r *http.Requ
 	}
 
 	log.Debugw("served sector file/dir", "sectorID", id, "fileType", ft, "path", path)
+}
+
+// serveSectorFileStat answers the ?stat=true query of remoteGetSector with a
+// JSON storiface.SectorFileStat describing the sector file or cache directory.
+func (handler *FetchHandler) serveSectorFileStat(w http.ResponseWriter, path string, stat os.FileInfo) {
+	fst, err := statSectorFile(path, stat)
+	if err != nil {
+		log.Errorf("stat sector file %s: %s", path, err.Error())
+		w.WriteHeader(500)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	if err := json.NewEncoder(w).Encode(&fst); err != nil {
+		log.Warnf("error writing sector file stat response: %+v", err)
+	}
 }
 
 func (handler *FetchHandler) remoteDeleteSector(w http.ResponseWriter, r *http.Request) {

@@ -208,3 +208,23 @@ func TarDirectory(constraints map[string]int64, dir string, w io.Writer, buf []b
 
 	return nil
 }
+
+// TarFileSizes lists the regular files in a tar stream as base name -> size,
+// without extracting anything.
+func TarFileSizes(body io.Reader) (map[string]int64, error) {
+	tr := tar.NewReader(body)
+	out := map[string]int64{}
+	for {
+		header, err := tr.Next()
+		if err == io.EOF {
+			return out, nil
+		}
+		if err != nil {
+			return nil, err
+		}
+		if header.Typeflag != tar.TypeReg {
+			continue
+		}
+		out[header.Name] = header.Size
+	}
+}
