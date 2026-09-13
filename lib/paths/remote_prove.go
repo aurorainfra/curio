@@ -26,41 +26,35 @@ import (
 )
 
 // ReadMinCacheInto writes a tar with the finalized-like (few MiB) cache files
-// of the sector (p_aux, t_aux, tree-r-last partitions) into w.
-//
-// Copies are tried in order of preference: long-term storage (CanStore) paths
-// first, then primary copies, then local before remote, then by weight. A copy
-// which lacks the essential finalized-cache files is skipped: sealing paths can
-// hold partial caches left behind by crashed pipeline runs, and using one of
-// those would otherwise only fail much later, e.g. at the end of a snap encode.
+// of the sector (p_aux, t_aux, tree-r-last partitions) into w. See ReadMinCache.
 func (r *Remote) ReadMinCacheInto(ctx context.Context, s storiface.SectorRef, ft storiface.SectorFileType, w io.Writer) error {
+	_, err := r.ReadMinCache(ctx, s, ft, w)
+	return err
+}
+
+// ReadMinCache writes a tar with the finalized-like (few MiB) cache files of
+// the sector (p_aux, t_aux, tree-r-last partitions) into w and returns the
+// storage path the copy was read from.
+//
+// Copies are tried most-trustworthy first (see sortCopiesByTrust): long-term
+// storage before sealing scratch, primary copies first, local before remote,
+// then by weight. A copy which lacks the essential finalized-cache files is
+// skipped: sealing paths can hold partial caches left behind by crashed
+// pipeline runs, and using one of those would otherwise only fail much later,
+// e.g. at the end of a snap encode.
+func (r *Remote) ReadMinCache(ctx context.Context, s storiface.SectorRef, ft storiface.SectorFileType, w io.Writer) (storiface.ID, error) {
 	si, err := r.index.StorageFindSector(ctx, s.ID, ft, 0, false)
 	if err != nil {
 		log.Debugf("Reader, did not find file on any of the workers %s (%s)", s.ID, ft.String())
-		return err
+		return "", err
 	}
 
 	if len(si) == 0 {
-		return xerrors.Errorf("failed to read sector %v from remote(%d): %w", s, ft, storiface.ErrSectorNotFound)
+		return "", xerrors.Errorf("failed to read sector %v from remote(%d): %w", s, ft, storiface.ErrSectorNotFound)
 	}
 
 	localPaths := r.localPathsByID(ctx)
-
-	sort.SliceStable(si, func(i, j int) bool {
-		a, b := si[i], si[j]
-		if a.CanStore != b.CanStore {
-			return a.CanStore
-		}
-		if a.Primary != b.Primary {
-			return a.Primary
-		}
-		_, aLocal := localPaths[a.ID]
-		_, bLocal := localPaths[b.ID]
-		if aLocal != bLocal {
-			return aLocal
-		}
-		return a.Weight > b.Weight
-	})
+	sortCopiesByTrust(si, "", localPaths)
 
 	for _, info := range si {
 		if local, ok := localPaths[info.ID]; ok {
@@ -76,7 +70,7 @@ func (r *Remote) ReadMinCacheInto(ctx context.Context, s storiface.SectorRef, ft
 				continue
 			}
 
-			return readMinCache(dir, w)
+			return info.ID, readMinCache(dir, w)
 		}
 
 		for _, u := range info.URLs {
@@ -105,12 +99,40 @@ func (r *Remote) ReadMinCacheInto(ctx context.Context, s storiface.SectorRef, ft
 				continue
 			}
 
-			_, err = w.Write(data)
-			return err
+			if _, err := w.Write(data); err != nil {
+				return "", err
+			}
+			return info.ID, nil
 		}
 	}
 
-	return xerrors.Errorf("failed to read a complete minimal sector cache %v from any of %d copies (%d): %w", s, len(si), ft, storiface.ErrSectorNotFound)
+	return "", xerrors.Errorf("failed to read a complete minimal sector cache %v from any of %d copies (%d): %w", s, len(si), ft, storiface.ErrSectorNotFound)
+}
+
+// sortCopiesByTrust orders sector copies most-trustworthy first: long-term
+// storage before sealing scratch (which may hold leftovers of crashed or
+// superseded pipeline runs), primary before secondary copies, the preferred
+// storage path (so related files of one sector come from the same copy),
+// local before remote, then by weight.
+func sortCopiesByTrust(si []storiface.SectorStorageInfo, prefer storiface.ID, localPaths map[storiface.ID]string) {
+	sort.SliceStable(si, func(i, j int) bool {
+		a, b := si[i], si[j]
+		if a.CanStore != b.CanStore {
+			return a.CanStore
+		}
+		if a.Primary != b.Primary {
+			return a.Primary
+		}
+		if prefer != "" && (a.ID == prefer) != (b.ID == prefer) {
+			return a.ID == prefer
+		}
+		_, aLocal := localPaths[a.ID]
+		_, bLocal := localPaths[b.ID]
+		if aLocal != bLocal {
+			return aLocal
+		}
+		return a.Weight > b.Weight
+	})
 }
 
 // readRemoteAll fetches url into memory.
