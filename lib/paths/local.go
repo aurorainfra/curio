@@ -272,6 +272,7 @@ func (st *Local) ExistingLocalFile(sid abi.SectorID, ft storiface.SectorFileType
 		}
 		candidates = append(candidates, p.sectorPath(sid, ft))
 		if len(candidates) >= 5 {
+			st.localLk.RUnlock()
 			return "", false // this is no fast path, return false
 		}
 	}
