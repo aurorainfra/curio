@@ -139,6 +139,65 @@ func AddPDPv0IndexFromPiece(t *testing.T, ctx context.Context, idx *indexstore.I
 	return nil
 }
 
+// AddV2AggregateIndex indexes a V2 aggregate fixture into the index store.
+// It calls IndexAggregateV2, feeds records to AddIndex and InsertAggregateIndex,
+// and verifies each sub-piece CID is discoverable via FindPieceInAggregate.
+func AddV2AggregateIndex(t *testing.T, ctx context.Context, idx *indexstore.IndexStore, fixture V2AggregateFixture) error {
+	recs := make(chan indexstore.Record, 64)
+	aggRecs := make(chan indexstore.Record, 64)
+	addFail := make(chan struct{})
+
+	var eg errgroup.Group
+	eg.Go(func() error {
+		return idx.AddIndex(ctx, fixture.PieceCIDV2, recs)
+	})
+	eg.Go(func() error {
+		return idx.InsertAggregateIndex(ctx, fixture.PieceCIDV2, aggRecs)
+	})
+
+	blocks, interrupted, idxErr := indexing.IndexAggregateV2(
+		fixture.PieceCIDV2,
+		bytes.NewReader(fixture.CarBytes),
+		fixture.RawSize,
+		recs,
+		aggRecs,
+		addFail,
+	)
+	close(recs)
+	close(aggRecs)
+
+	addErr := eg.Wait()
+	if idxErr != nil {
+		return idxErr
+	}
+	if addErr != nil {
+		return addErr
+	}
+	if interrupted {
+		return fmt.Errorf("V2 aggregate indexing was interrupted for piece %s", fixture.PieceCIDV2)
+	}
+	if blocks <= 0 {
+		return fmt.Errorf("V2 aggregate piece %s produced no indexed blocks", fixture.PieceCIDV2)
+	}
+
+	// Verify each sub-piece CID can be found in the aggregate.
+	for _, subCID := range fixture.SubCIDs {
+		pieces, err := idx.FindPieceInAggregate(ctx, subCID)
+		require.NoError(t, err)
+		require.GreaterOrEqual(t, len(pieces), 1, "sub-piece %s not found in aggregate %s", subCID, fixture.PieceCIDV2)
+		found := false
+		for _, p := range pieces {
+			if p.Cid.Equals(fixture.PieceCIDV2) {
+				found = true
+				break
+			}
+		}
+		require.True(t, found, "sub-piece %s not mapped to aggregate %s", subCID, fixture.PieceCIDV2)
+	}
+
+	return nil
+}
+
 // LogIPNIStatus writes the current IPNI rows to the test log for debugging
 // retrieval/indexing test failures.
 func LogIPNIStatus(t *testing.T, ctx context.Context, db *harmonydb.DB) {

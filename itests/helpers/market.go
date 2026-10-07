@@ -214,6 +214,11 @@ type MK20PendingSeed struct {
 	Indexing   bool
 	Announce   bool
 	Duration   abi.ChainEpoch
+
+	// AggregateType enables aggregate format for the deal (0 = no aggregate, default).
+	AggregateType mk20.AggregateType
+	// SubPieces provides sub-piece DataSources when AggregateType > 0.
+	SubPieces []mk20.DataSource
 }
 
 func SeedMK20PendingDeal(tx *harmonydb.Tx, s MK20PendingSeed) error {
@@ -227,6 +232,16 @@ func SeedMK20PendingDeal(tx *harmonydb.Tx, s MK20PendingSeed) error {
 		Format: mk20.PieceDataFormat{
 			Car: &mk20.FormatCar{},
 		},
+	}
+
+	// Override format for aggregate deals.
+	if s.AggregateType > 0 {
+		ds.Format = mk20.PieceDataFormat{
+			Aggregate: &mk20.FormatAggregate{
+				Type: s.AggregateType,
+				Sub:  s.SubPieces,
+			},
+		}
 	}
 
 	if s.Offline {

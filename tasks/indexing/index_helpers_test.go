@@ -70,7 +70,10 @@ func TestIndexAggregateUsesSuppliedSubPieceCIDs(t *testing.T) {
 	require.NoError(t, err)
 	require.False(t, interrupted)
 	require.NotZero(t, blocks)
-	require.Len(t, gotRecords, int(blocks))
+	// First record is the aggregate piece CID itself (root record), then payload blocks.
+	require.Len(t, gotRecords, int(blocks)+1)
+	require.True(t, aggregate.pieceCIDV2.Equals(gotRecords[0].Cid))
+	require.Equal(t, uint64(0), gotRecords[0].Offset)
 
 	require.Len(t, children, 2)
 	require.True(t, subA.pieceCIDV2.Equals(children[0].Cid))

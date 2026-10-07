@@ -1899,3 +1899,5 @@ lukechampine.com/blake3 v1.4.1/go.mod h1:QFosUxmjB8mnrWFSNwKmvxHpfY72bmD2tQ0kBMM
 rsc.io/binaryregexp v0.2.0/go.mod h1:qTv7/COck+e2FymRvadv62gMdZztPaShugOCi3I+8D8=
 rsc.io/quote/v3 v3.1.0/go.mod h1:yEA65RcK8LyAZtP9Kv3t0HmxON59tX3rD+tICJqUlj0=
 rsc.io/sampler v1.3.0/go.mod h1:T1hPZKmBbMNahiBKFy5HrXp6adAjACjK9JXDnKaTXpA=
+github.com/aurorainfra/go-data-segment v0.0.2-0.20260526165129-66b42ed5795d h1:hVFTPhO4461SqYLrz+LXRjE9pGgqbmNK4dzb8O3xYv8=
+github.com/aurorainfra/go-data-segment v0.0.2-0.20260526165129-66b42ed5795d/go.mod h1:L3Y7/5VXOeyEVPZhWAOhkbyzu+S33leSF2jsmfhOpFI=

@@ -15,6 +15,7 @@ import (
 	"golang.org/x/xerrors"
 
 	"github.com/filecoin-project/go-data-segment/datasegment"
+	"github.com/filecoin-project/go-data-segment/datasegmentv2"
 	"github.com/filecoin-project/go-data-segment/fr32"
 	commcid "github.com/filecoin-project/go-fil-commcid"
 	"github.com/filecoin-project/go-state-types/abi"
@@ -222,6 +223,18 @@ func IndexAggregate(pieceCid cid.Cid,
 		return 0, false, xerrors.Errorf("expected at least 2 sub pieces, got 0")
 	}
 
+	// Total unpadded size of the aggregate piece (sum of segment lengths) for root record
+	var totalUnpadded uint64
+	for _, entry := range valid {
+		totalUnpadded += entry.UnpaddedLength()
+	}
+	// Index the aggregate piece CID itself so HEAD/GET /ipfs/<piece_cid> can resolve (same as V2).
+	select {
+	case recs <- indexstore.Record{Cid: pieceCid, Offset: 0, Size: totalUnpadded}:
+	case <-addFail:
+		return 0, true, nil
+	}
+
 	return indexSegments(reader, valid, aggRecs, addFail, func(j int, entry datasegment.SegmentDesc, sectionReader *io.SectionReader, bufferSize int) (cid.Cid, int64, bool, error) {
 		sp := subPieces[j]
 		if sp.Format.Car == nil {
@@ -235,6 +248,77 @@ func IndexAggregate(pieceCid cid.Cid,
 
 		return sp.PieceCID, b, inter, nil
 	})
+}
+
+// IndexAggregateV2 indexes an AggregateTypeV2 piece: the tail index section is parsed with
+// datasegmentv2.ParseIndexSection (same as exa-gateway sector Finalize). For each blob entry we take
+// the content CID from the index (entry.DataCID()) and insert one record per piece; entries with ACL set are skipped.
+// Every record is written both to the block index (recs) and to the aggregate index (aggRecs).
+func IndexAggregateV2(
+	pieceCid cid.Cid,
+	reader IndexReader,
+	rawSize int64,
+	recs chan<- indexstore.Record,
+	aggRecs chan<- indexstore.Record,
+	addFail <-chan struct{},
+) (int64, bool, error) {
+	if aggRecs == nil {
+		return 0, false, xerrors.Errorf("aggregate index records channel is nil")
+	}
+
+	idx := &datasegmentv2.IndexDataV2{}
+	if err := idx.ParseIndexSection(reader, rawSize); err != nil {
+		return 0, false, xerrors.Errorf("parsing V2 tail index section: %w", err)
+	}
+	if len(idx.Entries) == 0 {
+		return 0, false, xerrors.New("V2 tail index section has no entries")
+	}
+
+	emit := func(rec indexstore.Record) bool {
+		select {
+		case recs <- rec:
+		case <-addFail:
+			return false
+		}
+		select {
+		case aggRecs <- rec:
+		case <-addFail:
+			return false
+		}
+		return true
+	}
+
+	// Index the aggregate piece CID itself so HEAD/GET /ipfs/<piece_cid> can resolve.
+	if !emit(indexstore.Record{Cid: pieceCid, Offset: 0, Size: uint64(rawSize)}) {
+		return 0, true, nil
+	}
+	records := int64(1)
+
+	// For each entry, get the piece's content CID from the index and insert one record.
+	for i, entry := range idx.Entries {
+		if entry == nil {
+			continue
+		}
+		if entry.ACLType != 0 {
+			continue // skip ACL entries
+		}
+		contentCid, err := entry.DataCID()
+		if err != nil {
+			log.Warnw("IndexAggregateV2: skip entry without valid DataCID", "index", i, "err", err)
+			continue
+		}
+		if !emit(indexstore.Record{
+			Cid:    contentCid,
+			Offset: entry.UnpaddedOffset(),
+			Size:   entry.UnpaddedLength(),
+		}) {
+			return records, true, nil
+		}
+		records++
+	}
+
+	log.Infow("Indexed AggregateTypeV2 tail index", "piece_cid", pieceCid, "num_entries", records)
+	return records, false, nil
 }
 
 // IndexPDPv0 indexes PDPv0 pieces that may be either data-segment aggregates

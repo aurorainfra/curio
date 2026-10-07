@@ -31,6 +31,7 @@ import (
 
 	"github.com/filecoin-project/curio/harmony/harmonydb"
 	"github.com/filecoin-project/curio/itests/helpers"
+	"github.com/filecoin-project/curio/market/mk20"
 
 	"github.com/filecoin-project/lotus/chain/types"
 	"github.com/filecoin-project/lotus/chain/wallet/key"
@@ -43,6 +44,10 @@ type dealVariant struct {
 	mk20        bool
 	shouldIndex bool
 	offline     bool
+
+	// V2 aggregate fields
+	aggregateType mk20.AggregateType
+	v2Fixture     *helpers.V2AggregateFixture // set when aggregateType == V2
 
 	dealID     string
 	clientAddr address.Address
@@ -219,6 +224,7 @@ func buildDealVariants(clientAddr address.Address) []*dealVariant {
 		{name: "mk12-online-noindex", shouldIndex: false, clientAddr: clientAddr},
 		{name: "mk20-online-index", mk20: true, shouldIndex: true, clientAddr: clientAddr},
 		{name: "mk20-offline-noindex", mk20: true, shouldIndex: false, offline: true, clientAddr: clientAddr},
+		{name: "mk20-v2agg-index", mk20: true, shouldIndex: true, aggregateType: mk20.AggregateTypeV2, clientAddr: clientAddr},
 	}
 }
 
@@ -227,7 +233,18 @@ func assignVariantFixturesAndIDs(t *testing.T, dir string, variants []*dealVaria
 	t.Helper()
 
 	for _, v := range variants {
-		v.fixture = helpers.CreatePieceFixture(t, dir, 200)
+		if v.aggregateType == mk20.AggregateTypeV2 {
+			// V2 aggregate: build from two small raw content blobs.
+			rawA := make([]byte, 128)
+			rawB := make([]byte, 96)
+			_, _ = rand.Read(rawA)
+			_, _ = rand.Read(rawB)
+			v2f := helpers.CreateV2AggregateFixture(t, [][]byte{rawA, rawB})
+			v.v2Fixture = &v2f
+			v.fixture = v2f.PieceFixture
+		} else {
+			v.fixture = helpers.CreatePieceFixture(t, dir, 200)
+		}
 		if v.mk20 {
 			v.dealID = ulid.MustNew(ulid.Timestamp(time.Now()), rand.Reader).String()
 		} else {
@@ -303,18 +320,23 @@ func seedVariantPipelines(
 
 			// MK20 variants seed the MK20 pending table.
 			if v.mk20 {
-				return true, helpers.SeedMK20PendingDeal(tx, helpers.MK20PendingSeed{
-					DealID:     v.dealID,
-					Client:     v.clientAddr.String(),
-					Provider:   maddr,
-					Contract:   "0xtest",
-					PieceCIDV2: v.fixture.PieceCIDV2,
-					Offline:    v.offline,
-					SourceURL:  v.pieceRefURL,
-					Indexing:   v.shouldIndex,
-					Announce:   v.shouldIndex,
-					Duration:   dealDuration,
-				})
+				seed := helpers.MK20PendingSeed{
+					DealID:        v.dealID,
+					Client:        v.clientAddr.String(),
+					Provider:      maddr,
+					Contract:      "0xtest",
+					PieceCIDV2:    v.fixture.PieceCIDV2,
+					Offline:       v.offline,
+					SourceURL:     v.pieceRefURL,
+					Indexing:      v.shouldIndex,
+					Announce:      v.shouldIndex,
+					Duration:      dealDuration,
+					AggregateType: v.aggregateType,
+				}
+				if v.v2Fixture != nil {
+					seed.SubPieces = v.v2Fixture.SubSources
+				}
+				return true, helpers.SeedMK20PendingDeal(tx, seed)
 			}
 
 			// Remaining MK12 variants seed classic F05 pending rows with signed proposal payload.
@@ -503,6 +525,23 @@ func assertMK20VariantFinalState(t *testing.T, ctx context.Context, db *harmonyd
 	require.True(t, p.Complete, "%s should have complete=true", v.name)
 	require.True(t, p.Sector.Valid, "%s should have sector assigned", v.name)
 	require.True(t, p.SectorOffset.Valid, "%s should have sector_offset assigned", v.name)
+
+	// Verify that long_term piecepark refs survived sealing. MK20 deals rely on
+	// piecepark for retrieval — if refs were incorrectly deleted during finalize,
+	// the piece data would become unretrievable.
+	var ltRefCount int
+	require.NoError(t, db.QueryRow(ctx, `
+		SELECT COUNT(*)
+		FROM parked_piece_refs pr
+		JOIN parked_pieces pp ON pp.id = pr.piece_id
+		WHERE pp.piece_cid = $1
+		  AND pp.long_term = TRUE
+		  AND pp.complete = TRUE
+		  AND pr.long_term = TRUE`,
+		v.fixture.PieceCIDV1.String(),
+	).Scan(&ltRefCount))
+	require.Greater(t, ltRefCount, 0,
+		"%s must retain long_term piecepark refs after sealing for retrieval", v.name)
 }
 
 // assertInitialPieceModel validates the persisted F05 proposal.
@@ -545,6 +584,12 @@ func assertVariantPieceRetrievals(t *testing.T, baseURL string, v *dealVariant) 
 
 func assertVariantIPFSBlockRetrieval(t *testing.T, baseURL string, v *dealVariant) {
 	t.Helper()
+
+	if v.aggregateType == mk20.AggregateTypeV2 {
+		// V2 aggregate data is raw content + index, not CAR. Sub-piece retrieval
+		// is validated separately in TestRetrievals/v2_aggregate_retrieval_by_subpiece_CID.
+		return
+	}
 
 	blockCID, blockData := helpers.SelectFixtureRawBlockCandidate(t, v.fixture)
 	status, body, headers := helpers.HTTPGetWithHeaders(t, baseURL, "/ipfs/"+blockCID.String(), map[string]string{

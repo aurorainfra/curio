@@ -14,6 +14,9 @@ import (
 	"time"
 
 	"github.com/ipfs/go-cid"
+	"github.com/minio/sha256-simd"
+	"github.com/multiformats/go-multicodec"
+	"github.com/multiformats/go-multihash"
 	"github.com/oklog/ulid"
 	"github.com/samber/lo"
 	"github.com/yugabyte/pgx/v5"
@@ -42,6 +45,10 @@ import (
 	"github.com/filecoin-project/lotus/chain/types"
 	lethtypes "github.com/filecoin-project/lotus/chain/types/ethtypes"
 )
+
+func init() {
+	multihash.Register(uint64(multicodec.Fr32Sha256Trunc254Padbintree), sha256.New)
+}
 
 type MK20API interface {
 	ChainHead(context.Context) (*types.TipSet, error)
@@ -870,6 +877,12 @@ func insertPDPPipeline(ctx context.Context, tx *harmonydb.Tx, deal *Deal) error 
 			}
 		}
 
+		// AggregateTypeV2 with a single piece: the download IS the final deal piece
+		// (no SP-side aggregation will occur), so store it long_term for retrieval.
+		// Multi-piece downloads stay short-term as they'll be replaced by the assembled aggregate.
+		longTerm := data.Format.Aggregate != nil &&
+			data.Format.Aggregate.Type == AggregateTypeV2 && len(toDownload) == 1
+
 		var downloadRefs []ParkedPieceDownloadRef
 		for k, v := range toDownload {
 			for _, src := range v {
@@ -888,7 +901,7 @@ func insertPDPPipeline(ctx context.Context, tx *harmonydb.Tx, deal *Deal) error 
 					RawSize:    int64(k.RawSize),
 					URL:        src.URL,
 					Headers:    headers,
-					LongTerm:   false,
+					LongTerm:   longTerm,
 				})
 			}
 		}

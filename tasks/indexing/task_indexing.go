@@ -25,6 +25,7 @@ import (
 	"github.com/filecoin-project/curio/harmony/resources"
 	"github.com/filecoin-project/curio/harmony/taskhelp"
 	"github.com/filecoin-project/curio/lib/cachedreader"
+	"github.com/filecoin-project/curio/lib/commcidv2"
 	"github.com/filecoin-project/curio/lib/ffi"
 	"github.com/filecoin-project/curio/lib/passcall"
 	"github.com/filecoin-project/curio/lib/pieceprovider"
@@ -162,6 +163,7 @@ func (i *IndexingTask) Do(ctx context.Context, taskID harmonytask.TaskID, stillO
 
 	var byteData bool
 	var subPieces []mk20.DataSource
+	var aggregateType mk20.AggregateType
 
 	if task.Mk20 {
 		id, err := ulid.Parse(task.UUID)
@@ -172,14 +174,15 @@ func (i *IndexingTask) Do(ctx context.Context, taskID harmonytask.TaskID, stillO
 		if err != nil {
 			return false, xerrors.Errorf("getting mk20 deal from DB: %w", err)
 		}
-		if deal.Data.Format.Aggregate != nil {
+		if deal.Data != nil && deal.Data.Format.Aggregate != nil {
+			aggregateType = deal.Data.Format.Aggregate.Type
 			if deal.Data.Format.Aggregate.Type > 0 {
 				var found bool
 				if len(deal.Data.Format.Aggregate.Sub) > 0 {
 					subPieces = deal.Data.Format.Aggregate.Sub
 					found = true
 				}
-				if len(deal.Data.SourceAggregate.Pieces) > 0 {
+				if deal.Data.SourceAggregate != nil && len(deal.Data.SourceAggregate.Pieces) > 0 {
 					subPieces = deal.Data.SourceAggregate.Pieces
 					found = true
 				}
@@ -230,22 +233,24 @@ func (i *IndexingTask) Do(ctx context.Context, taskID harmonytask.TaskID, stillO
 		return false, xerrors.Errorf("parsing piece CID: %w", err)
 	}
 
-	// Validate raw_size is present (required for PieceCID v2 calculation)
-	if !task.RawSize.Valid {
-		return false, xerrors.Errorf("raw_size is required but NULL for piece %s (uuid: %s)", task.PieceCid, task.UUID)
-	}
-
-	pc2, err := commcid.PieceCidV2FromV1(pieceCid, uint64(task.RawSize.Int64))
-
-	if err != nil {
-		return false, xerrors.Errorf("getting piece commP: %w", err)
+	var pc2 cid.Cid
+	if commcidv2.IsPieceCidV2(pieceCid) {
+		pc2 = pieceCid
+	} else {
+		if !task.RawSize.Valid {
+			return false, xerrors.Errorf("raw_size is required for piece CID v1 to v2 conversion (piece %s, uuid: %s)", task.PieceCid, task.UUID)
+		}
+		pc2, err = commcid.PieceCidV2FromV1(pieceCid, uint64(task.RawSize.Int64))
+		if err != nil {
+			return false, xerrors.Errorf("getting piece commP: %w", err)
+		}
 	}
 
 	var reader storiface.Reader
 
 	if task.Mk20 {
+		// mk20 always reads from piecepark (long_term storage), never from unsealed sectors.
 		reader, _, err = i.cpr.GetSharedPieceReader(ctx, pc2, false)
-
 		if err != nil {
 			return false, xerrors.Errorf("getting piece reader: %w", err)
 		}
@@ -297,7 +302,12 @@ func (i *IndexingTask) Do(ctx context.Context, taskID harmonytask.TaskID, stillO
 
 	aggRecs := make(chan indexstore.Record, chanSize)
 
-	if task.Mk20 && len(subPieces) > 0 {
+	if task.Mk20 && aggregateType == mk20.AggregateTypeV2 {
+		eg.Go(func() error {
+			return i.indexStore.InsertAggregateIndex(ctx, pc2, aggRecs)
+		})
+		blocks, interrupted, err = IndexAggregateV2(pc2, reader, task.RawSize.Int64, recs, aggRecs, addFail)
+	} else if task.Mk20 && len(subPieces) > 0 {
 		eg.Go(func() error {
 			return i.indexStore.InsertAggregateIndex(ctx, pc2, aggRecs)
 		})
@@ -388,7 +398,7 @@ func (i *IndexingTask) recordCompletion(ctx context.Context, task itask, taskID 
 				return xerrors.Errorf("store indexing success: updated %d rows", n)
 			}
 		} else {
-			n, err := i.db.Exec(ctx, `UPDATE market_mk12_deal_pipeline SET indexed = TRUE, indexing_task_id = NULL, 
+			n, err := i.db.Exec(ctx, `UPDATE market_mk12_deal_pipeline SET indexed = TRUE, indexing_task_id = NULL,
                                      complete = TRUE WHERE uuid = $1 AND indexing_task_id = $2`, task.UUID, taskID)
 			if err != nil {
 				return xerrors.Errorf("store indexing success: updating pipeline: %w", err)
