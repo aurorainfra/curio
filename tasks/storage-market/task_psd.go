@@ -15,6 +15,7 @@ import (
 	"github.com/filecoin-project/go-state-types/builtin"
 	"github.com/filecoin-project/go-state-types/builtin/v9/market"
 	"github.com/filecoin-project/go-state-types/crypto"
+	"github.com/filecoin-project/go-state-types/network"
 
 	"github.com/filecoin-project/curio/deps/config"
 	"github.com/filecoin-project/curio/harmony/harmonydb"
@@ -39,6 +40,7 @@ type psdApi interface {
 	GasEstimateMessageGas(context.Context, *types.Message, *api.MessageSendSpec, types.TipSetKey) (*types.Message, error)
 	StateMinerInfo(context.Context, address.Address, types.TipSetKey) (api.MinerInfo, error)
 	StateCall(context.Context, *types.Message, types.TipSetKey) (*api.InvocResult, error)
+	StateNetworkVersion(context.Context, types.TipSetKey) (network.Version, error)
 	ctladdr.NodeApi
 }
 
@@ -148,6 +150,24 @@ func (p *PSDTask) Do(ctx context.Context, taskID harmonytask.TaskID, stillOwned 
 		if err != nil {
 			return false, err
 		}
+		// TODO(NV29): Drop this check once pre-NV29 support is dropped (verified deals are no longer accepted).
+		// FIP-0118 freezes the verified registry from NV29, so a verified deal accepted before the upgrade
+		// can no longer be published. Fail it explicitly instead of retrying it forever.
+		if d.sprop.Proposal.VerifiedDeal {
+			nv, err := p.api.StateNetworkVersion(ctx, head.Key())
+			if err != nil {
+				return false, xerrors.Errorf("getting network version: %w", err)
+			}
+			if nv >= network.Version29 {
+				psdlog.Errorw("cannot publish verified deal after network version 29 (FIP-0118)", "uuid", d.uuid, "piece", d.sprop.Proposal.PieceCID)
+				err = failDeal(ctx, p.db, d.uuid, true, "verified deals can not be published from network version 29 (FIP-0118); the deal was not published before the upgrade")
+				if err != nil {
+					return false, err
+				}
+				continue
+			}
+		}
+
 		if head.Height()+p.sm.pin.GetExpectedSealDuration() > d.sprop.Proposal.StartEpoch {
 			psdlog.Errorf(
 				"cannot publish deal with piece CID %s: current epoch %d has passed deal proposal start epoch %d",

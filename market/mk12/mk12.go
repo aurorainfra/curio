@@ -31,6 +31,7 @@ import (
 	"github.com/filecoin-project/go-state-types/builtin/v15/market"
 	"github.com/filecoin-project/go-state-types/builtin/v15/miner"
 	"github.com/filecoin-project/go-state-types/crypto"
+	"github.com/filecoin-project/go-state-types/network"
 
 	"github.com/filecoin-project/curio/deps/config"
 	"github.com/filecoin-project/curio/harmony/harmonydb"
@@ -55,6 +56,7 @@ type MK12API interface {
 	StateDealProviderCollateralBounds(context.Context, abi.PaddedPieceSize, bool, types.TipSetKey) (api.DealCollateralBounds, error)
 	StateMarketBalance(context.Context, address.Address, types.TipSetKey) (api.MarketBalance, error)
 	StateMinerInfo(context.Context, address.Address, types.TipSetKey) (api.MinerInfo, error)
+	StateNetworkVersion(context.Context, types.TipSetKey) (network.Version, error)
 	StateVerifiedClientStatus(ctx context.Context, addr address.Address, tsk types.TipSetKey) (*abi.StoragePower, error)
 	StateLookupID(context.Context, address.Address, types.TipSetKey) (address.Address, error)
 	WalletSign(context.Context, address.Address, []byte) (*crypto.Signature, error)
@@ -264,18 +266,29 @@ func (m *MK12) ExecuteDeal(ctx context.Context, dp *DealParams, clientPeer peer.
 // It returns a validationError. If a nicer error message should be sent to the
 // client, the reason string will be set to that nicer error message.
 func (m *MK12) validateDealProposal(ctx context.Context, deal *ProviderDealState) *validationError {
-	// Verified deal checks
-	if deal.ClientDealProposal.Proposal.VerifiedDeal {
-		return &validationError{
-			reason: "new verified deals are not supported",
-		}
-	}
-
 	head, err := m.api.ChainHead(ctx)
 	if err != nil {
 		return &validationError{
 			reason: "server error: getting chain head",
 			error:  xerrors.Errorf("node error getting most recent state id: %w", err),
+		}
+	}
+
+	// TODO(NV29): Reject verified deals unconditionally once pre-NV29 support is dropped.
+	// FIP-0118 freezes the verified registry from NV29, so verified deals are only
+	// accepted (and DataCap-checked below) until the upgrade.
+	if deal.ClientDealProposal.Proposal.VerifiedDeal {
+		nv, err := m.api.StateNetworkVersion(ctx, head.Key())
+		if err != nil {
+			return &validationError{
+				reason: "server error: getting network version",
+				error:  xerrors.Errorf("node error getting network version: %w", err),
+			}
+		}
+		if nv >= network.Version29 {
+			return &validationError{
+				reason: "verified deals are not supported from network version 29 (FIP-0118)",
+			}
 		}
 	}
 
@@ -349,7 +362,7 @@ func (m *MK12) validateDealProposal(ctx context.Context, deal *ProviderDealState
 		return &validationError{error: err}
 	}
 
-	bounds, err := m.api.StateDealProviderCollateralBounds(ctx, proposal.PieceSize, false, types.EmptyTSK)
+	bounds, err := m.api.StateDealProviderCollateralBounds(ctx, proposal.PieceSize, proposal.VerifiedDeal, types.EmptyTSK)
 	if err != nil {
 		return &validationError{
 			reason: "server error: getting collateral bounds",
@@ -397,6 +410,31 @@ func (m *MK12) validateDealProposal(ctx context.Context, deal *ProviderDealState
 	if clientMarketBalance.Available.LessThan(proposal.ClientBalanceRequirement()) {
 		err := xerrors.Errorf("client available funds in escrow %d not enough to meet storage cost for deal %d", clientMarketBalance.Available, proposal.ClientBalanceRequirement())
 		return &validationError{error: err}
+	}
+
+	// Verified deal checks (pre-NV29 only, see above)
+	if proposal.VerifiedDeal {
+		// Get data cap
+		dataCap, err := m.api.StateVerifiedClientStatus(ctx, proposal.Client, tsk)
+		if err != nil {
+			return &validationError{
+				reason: "server error: getting verified datacap",
+				error:  xerrors.Errorf("node error fetching verified data cap: %w", err),
+			}
+		}
+
+		if dataCap == nil {
+			return &validationError{
+				reason: "client is not a verified client",
+				error:  errors.New("node error fetching verified data cap: data cap missing -- client not verified"),
+			}
+		}
+
+		pieceSize := big.NewIntUnsigned(uint64(proposal.PieceSize))
+		if dataCap.LessThan(pieceSize) {
+			err := xerrors.Errorf("verified deal DataCap %d too small for proposed piece size %d", dataCap, pieceSize)
+			return &validationError{error: err}
+		}
 	}
 
 	return nil
