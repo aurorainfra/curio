@@ -42,7 +42,7 @@ var categoryConfig = map[string][]string{
 	"10_Cache Metrics":                      {"lib/cachedreader"},
 	"11_Network Metrics":                    {"lib/robusthttp", "lib/dealdata"},
 	"12_FFI Metrics":                        {"lib/ffi"},
-	"13_HTTP/Retrieval Metrics":             {"market/"},
+	"13_HTTP/Retrieval Metrics":             {"market/", "lib/curetr"},
 	"14_GC Metrics":                         {"tasks/gc"},
 	"15_Batching Metrics":                   {"tasks/sealsupra", "lib/slotmgr"},
 }

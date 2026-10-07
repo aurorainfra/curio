@@ -146,6 +146,36 @@ This document lists Prometheus metrics exported by Curio using the exact metric 
 
 | Metric | Type | Labels | Description |
 |--------|------|--------|-------------|
+| `curio_blockcache_admit_count` | counter | — | Counter of blocks admitted to the resident set |
+| `curio_blockcache_evict_count` | counter | — | Counter of resident blocks evicted (back to the ghost set) |
+| `curio_blockcache_ghost_entries` | gauge | — | Entries in the ghost (tracking) set |
+| `curio_blockcache_hit_count` | counter | — | Counter of block cache hits |
+| `curio_blockcache_reject_large_count` | counter | — | Counter of blocks larger than the largest size class |
+| `curio_blockcache_resident_blocks` | gauge | — | Blocks held by the resident set |
+| `curio_blockcache_resident_bytes` | gauge | — | Bytes held by the resident set |
+| `curio_blockcache_tracked_only_count` | counter | — | Counter of accesses recorded in the ghost set without admission |
+| `curio_curetr_bulk_400_response_count` | counter | — | Counter of bulk 400 responses (bad request) |
+| `curio_curetr_bulk_blocks_requested` | counter | — | Total blocks requested through bulk requests |
+| `curio_curetr_bulk_bytes_served_count` | counter | — | Total block bytes served by the bulk path |
+| `curio_curetr_bulk_frames_error` | counter | — | Counter of error bulk frames |
+| `curio_curetr_bulk_frames_notfound` | counter | — | Counter of not-found bulk frames |
+| `curio_curetr_bulk_frames_ok` | counter | — | Counter of ok bulk frames |
+| `curio_curetr_bulk_inflight` | gauge | — | Bulk requests currently being served |
+| `curio_curetr_bulk_range_blocks` | histogram | — | Distribution of blocks served per merged range read |
+| `curio_curetr_bulk_range_bytes` | histogram | — | Distribution of merged range read sizes |
+| `curio_curetr_bulk_request_count` | counter | — | Counter of bulk block requests |
+| `curio_curetr_raw_200_response_count` | counter | — | Counter of raw-block 200 responses |
+| `curio_curetr_raw_400_response_count` | counter | — | Counter of raw-block 400 responses (bad cid) |
+| `curio_curetr_raw_404_response_count` | counter | — | Counter of raw-block 404 responses |
+| `curio_curetr_raw_500_response_count` | counter | — | Counter of raw-block 500 responses |
+| `curio_curetr_raw_block_bytes` | histogram | — | Distribution of served block sizes |
+| `curio_curetr_raw_bytes_served_count` | counter | — | Total block bytes served by the raw fast path |
+| `curio_curetr_raw_fetch_duration_ms` | histogram | — | Time spent fetching the block from the blockstore |
+| `curio_curetr_raw_get_request_count` | counter | — | Counter of raw-block GET requests |
+| `curio_curetr_raw_head_request_count` | counter | — | Counter of raw-block HEAD requests |
+| `curio_curetr_raw_inflight` | gauge | — | Raw-block requests currently being served |
+| `curio_curetr_raw_request_duration_ms` | histogram | — | Time to serve a raw-block request end to end |
+| `curio_curetr_raw_write_duration_ms` | histogram | — | Time spent writing the block to the client |
 | `curio_dagstore_pr_at_cache_fill_count` | counter | `network` | PieceReader ReadAt full cache fill count |
 | `curio_dagstore_pr_at_hit_bytes` | counter | `network` | PieceReader ReadAt bytes from cache |
 | `curio_dagstore_pr_at_hit_count` | counter | `network` | PieceReader ReadAt from cache hits |
@@ -162,12 +192,15 @@ This document lists Prometheus metrics exported by Curio using the exact metric 
 | `curio_http_active_requests` | gauge | `path`, `method` | Number of active/in-flight HTTP requests |
 | `curio_http_blockstore_cache_hits` | counter | — | Counter of blockstore cache hits |
 | `curio_http_blockstore_cache_misses` | counter | — | Counter of blockstore cache misses |
+| `curio_http_ipfs_frisbii_count` | counter | — | Counter of /ipfs requests served by frisbii |
+| `curio_http_ipfs_raw_fastpath_count` | counter | — | Counter of /ipfs requests served by the curetr raw-block fast path |
 | `curio_http_piece_by_cid_200_response_count` | counter | — | Counter of /piece/<piece-cid> 200 responses |
 | `curio_http_piece_by_cid_400_response_count` | counter | — | Counter of /piece/<piece-cid> 400 responses |
 | `curio_http_piece_by_cid_404_response_count` | counter | — | Counter of /piece/<piece-cid> 404 responses |
 | `curio_http_piece_by_cid_500_response_count` | counter | — | Counter of /piece/<piece-cid> 500 responses |
 | `curio_http_piece_by_cid_request_count` | counter | — | Counter of /piece/<piece-cid> requests |
 | `curio_http_piece_by_cid_request_duration_ms` | histogram | — | Time spent retrieving a piece by cid |
+| `curio_http_rbls_bulk_hint_miss_count` | counter | — | Counter of bulk piece hints that did not resolve and fell back to full resolution |
 | `curio_http_rbls_bytes_sent_count` | counter | — | Counter of the number of bytes sent by bitswap since startup |
 | `curio_http_rbls_get_fail_response_count` | counter | — | Counter of failed RemoteBlockstore Get responses |
 | `curio_http_rbls_get_request_count` | counter | — | Counter of RemoteBlockstore Get requests |
@@ -178,6 +211,17 @@ This document lists Prometheus metrics exported by Curio using the exact metric 
 | `curio_http_rbls_has_fail_response_count` | counter | — | Counter of failed RemoteBlockstore Has responses |
 | `curio_http_rbls_has_request_count` | counter | — | Counter of RemoteBlockstore Has requests |
 | `curio_http_rbls_has_success_response_count` | counter | — | Counter of successful RemoteBlockstore Has responses |
+| `curio_http_rbls_offsetcache_admin_lock_hold_ms` | histogram | — | Time the offset cache admin lock was held for writes |
+| `curio_http_rbls_offsetcache_bytes_used` | gauge | — | Bytes used by the piece offset cache |
+| `curio_http_rbls_offsetcache_evict_count` | counter | — | Counter of pieces evicted from the offset cache |
+| `curio_http_rbls_offsetcache_hit_count` | counter | — | Counter of block lookups served from the piece offset cache |
+| `curio_http_rbls_offsetcache_load_count` | counter | — | Counter of piece index load attempts |
+| `curio_http_rbls_offsetcache_load_duration_ms` | histogram | — | Time spent loading a piece block index |
+| `curio_http_rbls_offsetcache_load_error_count` | counter | — | Counter of failed piece index loads |
+| `curio_http_rbls_offsetcache_lost_compare_count` | counter | — | Counter of loaded pieces dropped because they did not outscore eviction candidates |
+| `curio_http_rbls_offsetcache_miss_count` | counter | — | Counter of block lookups not present in the piece offset cache |
+| `curio_http_rbls_offsetcache_pieces_cached` | gauge | — | Pieces currently in the offset cache |
+| `curio_http_rbls_offsetcache_refused_large_count` | counter | — | Counter of pieces refused because their index exceeds the size caps |
 | `curio_http_request_count` | counter | `path`, `method` | Counter of HTTP requests |
 | `curio_http_response_bytes_count` | counter | `status_code`, `path` | Sum of HTTP response content-length |
 | `curio_http_response_status_count` | counter | `status_code`, `path`, `method` | Counter of HTTP response status codes |
