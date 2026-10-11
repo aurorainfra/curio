@@ -1181,6 +1181,15 @@ description: The default curio configuration
   # type: bool
   #SingleHasherPerThread = false
 
+  # LayerNVMEDisableTrim disables deallocating (NVMe TRIM) layer storage on the LayerNVMEDevices.
+  # By default a batch slot's layer storage is trimmed once all sectors of the batch are finalized
+  # (or the batch is aborted), and all slots without sectors waiting for C1/finalization are trimmed on
+  # startup, together with the device space past the last slot. This keeps free space available to the
+  # drive controller and reduces write amplification. (Default: false)
+  #
+  # type: bool
+  #LayerNVMEDisableTrim = false
+
 
 # Apis defines the configuration for API-related settings in the Curio system.
 #

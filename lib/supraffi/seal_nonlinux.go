@@ -58,6 +58,12 @@ func GetMaxBlockOffset(sectorSize uint64) uint64 {
 	panic("GetMaxBlockOffset: supraseal is only available on Linux")
 }
 
+// TrimBlocks deallocates (NVMe TRIM) numBlocks blocks starting at blockOffset
+// on every layer NVMe device.
+func TrimBlocks(blockOffset, numBlocks, sectorSize uint64) error {
+	panic("TrimBlocks: supraseal is only available on Linux")
+}
+
 // GetSlotSize returns the size in blocks required for the given number of sectors.
 // This is a stub implementation for non-Linux platforms.
 func GetSlotSize(numSectors int, sectorSize uint64) uint64 {

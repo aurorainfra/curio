@@ -755,6 +755,13 @@ type CurioSealConfig struct {
 	//
 	// Example: ["0000:01:00.0", "0000:01:00.1"]
 	LayerNVMEDevices []string
+
+	// LayerNVMEDisableTrim disables deallocating (NVMe TRIM) layer storage on the LayerNVMEDevices.
+	// By default a batch slot's layer storage is trimmed once all sectors of the batch are finalized
+	// (or the batch is aborted), and all slots without sectors waiting for C1/finalization are trimmed on
+	// startup, together with the device space past the last slot. This keeps free space available to the
+	// drive controller and reduces write amplification. (Default: false)
+	LayerNVMEDisableTrim bool
 }
 
 type PagerDutyConfig struct {

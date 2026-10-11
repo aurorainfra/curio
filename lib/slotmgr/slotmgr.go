@@ -31,6 +31,16 @@ type slot struct {
 	// When work is set to false, slot.sectors should be a superset of batch refs in the DB
 	// and a local process should periodically check the db for removed refs and remove them from the slot
 	work bool
+
+	// trimming is true while the slot's storage is being deallocated (NVMe
+	// TRIM) after the slot became free. The slot is not handed out until the
+	// trim finishes.
+	trimming bool
+}
+
+// free reports whether the slot can be handed out for new work.
+func (st *slot) free() bool {
+	return len(st.sectors) == 0 && !st.trimming
 }
 
 type SlotMgr struct {
@@ -41,6 +51,10 @@ type SlotMgr struct {
 
 	lk   sync.Mutex
 	cond *sync.Cond
+
+	// trim, when set, deallocates a slot's storage. It is called whenever a
+	// slot becomes free, outside the lock.
+	trim func(slotOff uint64) error
 }
 
 // NewSlotMgr creates the SlotMgr and initializes local references from the DB.
@@ -98,6 +112,7 @@ func NewSlotMgr(db *harmonydb.DB, machineHostAndPort string, slotOffs []uint64) 
 		type jsonSlot struct {
 			SlotOffset uint64         `json:"slot_offset"`
 			Work       bool           `json:"work"`
+			Trimming   bool           `json:"trimming"`
 			Sectors    []abi.SectorID `json:"sectors"`
 		}
 		type jsonSm struct {
@@ -109,6 +124,7 @@ func NewSlotMgr(db *harmonydb.DB, machineHostAndPort string, slotOffs []uint64) 
 			slc[i] = jsonSlot{
 				SlotOffset: slt.slotOffset,
 				Work:       slt.work,
+				Trimming:   slt.trimming,
 				Sectors:    lo.Keys(slt.sectors),
 			}
 		}
@@ -120,6 +136,62 @@ func NewSlotMgr(db *harmonydb.DB, machineHostAndPort string, slotOffs []uint64) 
 	go sm.watchSlots()
 
 	return sm, nil
+}
+
+// EnableTrim makes the manager deallocate a slot's storage whenever the slot
+// becomes free (all its sectors finalized, or its batch aborted). Slots which
+// are free right now - no sectors waiting for C1/finalization - are trimmed
+// immediately, which clears data left behind by previous runs.
+//
+// A slot is not handed out by Get while it is being trimmed.
+func (s *SlotMgr) EnableTrim(trim func(slotOff uint64) error) {
+	s.lk.Lock()
+	defer s.lk.Unlock()
+
+	s.trim = trim
+	for _, slt := range s.slots {
+		if len(slt.sectors) == 0 && !slt.work {
+			s.startTrimLocked(slt, "startup")
+		}
+	}
+}
+
+// slotFreedLocked is called with the lock held when a slot transitions to
+// having no sectors.
+func (s *SlotMgr) slotFreedLocked(slt *slot, reason string) {
+	if s.trim != nil {
+		s.startTrimLocked(slt, reason)
+		return
+	}
+	s.cond.Signal()
+}
+
+func (s *SlotMgr) startTrimLocked(slt *slot, reason string) {
+	if slt.trimming {
+		return
+	}
+	slt.trimming = true
+	s.recordSlotMetrics(slt)
+
+	trim := s.trim
+	go func() {
+		start := time.Now()
+		err := trim(slt.slotOffset)
+		if err != nil {
+			log.Errorw("trimming slot", "slot", slt.slotOffset, "reason", reason, "took", time.Since(start), "error", err)
+			stats.Record(context.Background(), SlotMgrMeasures.SlotErrors.M(1))
+		} else {
+			log.Infow("trimmed slot", "slot", slt.slotOffset, "reason", reason, "took", time.Since(start))
+		}
+
+		s.lk.Lock()
+		slt.trimming = false
+		s.recordSlotMetrics(slt)
+		s.cond.Broadcast()
+		s.lk.Unlock()
+
+		stats.Record(context.Background(), SlotMgrMeasures.SlotsAvailable.M(int64(s.Available())))
+	}()
 }
 
 func (s *SlotMgr) watchSlots() {
@@ -170,9 +242,9 @@ func (s *SlotMgr) watchSingle() error {
 			}
 		}
 
-		// If we removed everything from the slot, signal
+		// If we removed everything from the slot, release it
 		if len(slt.sectors) == 0 {
-			s.cond.Signal()
+			s.slotFreedLocked(slt, "refs removed")
 		}
 
 		// Always re-record metrics if we might have changed the slot
@@ -196,7 +268,7 @@ func (s *SlotMgr) Get(ids []abi.SectorID) uint64 {
 	for {
 		for _, slt := range s.slots {
 			// pick the first free slot
-			if len(slt.sectors) == 0 {
+			if slt.free() {
 				// Fill it
 				for _, id := range ids {
 					slt.sectors[id] = struct{}{}
@@ -255,7 +327,7 @@ func (s *SlotMgr) AbortSlot(slotOff uint64) error {
 
 	sl.sectors = make(map[abi.SectorID]struct{})
 	sl.work = false
-	s.cond.Signal()
+	s.slotFreedLocked(sl, "aborted")
 
 	s.recordSlotMetrics(sl)
 	return nil
@@ -281,11 +353,14 @@ func (s *SlotMgr) SectorDone(ctx context.Context, slotOff uint64, id abi.SectorI
 		return xerrors.Errorf("slot %d not found", slotOff)
 	}
 
+	_, had := sl.sectors[id]
 	delete(sl.sectors, id)
 
-	// If we freed up the slot completely, signal waiters
-	if len(sl.sectors) == 0 {
-		s.cond.Signal()
+	// If this freed up the slot completely, release it. The background watcher
+	// may already have removed the sector (and released the slot) after the DB
+	// ref was deleted above.
+	if had && len(sl.sectors) == 0 {
+		s.slotFreedLocked(sl, "sectors finalized")
 	}
 
 	s.recordSlotMetrics(sl)
@@ -299,7 +374,7 @@ func (s *SlotMgr) Available() int {
 
 	var available int
 	for _, slt := range s.slots {
-		if len(slt.sectors) == 0 {
+		if slt.free() {
 			available++
 		}
 	}

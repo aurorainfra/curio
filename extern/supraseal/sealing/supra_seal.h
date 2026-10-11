@@ -45,6 +45,11 @@ int c1(size_t block_offset,size_t num_sectors, size_t sector_slot,
 // are [0 .. max).
 size_t get_max_block_offset(size_t sector_size);
 
+// Deallocate (TRIM) num_blocks blocks starting at block_offset on every layer
+// NVMe device. Returns 0 on success, 1 if some device does not support it,
+// -1 on error.
+int nvme_trim(size_t block_offset, size_t num_blocks, size_t sector_size);
+
 // Returns the size in blocks required to for the given num_sectors.
 size_t get_slot_size(size_t num_sectors, size_t sector_size);
 

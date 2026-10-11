@@ -184,6 +184,22 @@ func GetMaxBlockOffset(sectorSize uint64) uint64 {
 	return uint64(C.get_max_block_offset(C.size_t(sectorSize)))
 }
 
+// TrimBlocks deallocates (NVMe TRIM) numBlocks blocks starting at blockOffset
+// on every layer NVMe device, telling the drives the data is no longer needed.
+// The caller must ensure no batch pipeline uses the range. Returns
+// ErrTrimUnsupported if some device does not support deallocation (the others
+// are still trimmed).
+func TrimBlocks(blockOffset, numBlocks, sectorSize uint64) error {
+	switch rc := C.nvme_trim(C.size_t(blockOffset), C.size_t(numBlocks), C.size_t(sectorSize)); rc {
+	case 0:
+		return nil
+	case 1:
+		return ErrTrimUnsupported
+	default:
+		return fmt.Errorf("nvme trim of blocks [%d, %d) failed: %d", blockOffset, blockOffset+numBlocks, int(rc))
+	}
+}
+
 // GetSlotSize returns the size in blocks required for the given number of sectors.
 // Used for batch sealing with NVMe devices.
 func GetSlotSize(numSectors int, sectorSize uint64) uint64 {

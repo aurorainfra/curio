@@ -1,6 +1,13 @@
 package supraffi
 
-import "time"
+import (
+	"errors"
+	"time"
+)
+
+// ErrTrimUnsupported is returned by TrimBlocks when a layer NVMe device does
+// not support deallocation (Dataset Management).
+var ErrTrimUnsupported = errors.New("nvme device does not support deallocation (trim)")
 
 // HealthInfo represents NVMe device health information in a more Go-friendly format
 type HealthInfo struct {

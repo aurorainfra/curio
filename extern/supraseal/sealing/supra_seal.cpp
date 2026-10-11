@@ -70,6 +70,10 @@
     break;                      \
   }
 
+// qpair used only for deallocation (TRIM), after the four qpairs used by the
+// pc1 reader/writer, pc2 and c1 (see topology_t).
+static const size_t TRIM_QPAIR = 4;
+
 class sealing_ctx_t {
 public:
   nvme_controllers_t* controllers;
@@ -97,7 +101,7 @@ public:
     }
 
     controllers = new nvme_controllers_t(topology->get_allowed_nvme());
-    controllers->init(4); // qpairs
+    controllers->init(TRIM_QPAIR + 1); // qpairs
     controllers->sort();
 
     if (controllers->size() < topology->get_allowed_nvme().size()) {
@@ -285,6 +289,19 @@ int node_read(size_t sector_size, size_t num_sectors, uint64_t node_to_read) {
   SECTOR_PARAMS_TABLE(SECTOR_CALL_TABLE(CALL_NR));
 #undef CALL_NR
   return 0;
+}
+
+static std::mutex trim_mtx;
+
+// Deallocate (TRIM) num_blocks BLOCK_SIZE blocks starting at block_offset on
+// every layer NVMe device. Callers must ensure no pipeline uses the range.
+// Returns 0 on success, 1 if some device does not support deallocation, -1 on
+// error. Never aborts the process.
+extern "C"
+int nvme_trim(size_t block_offset, size_t num_blocks, size_t sector_size) {
+  init_ctx(sector_size);
+  std::unique_lock<std::mutex> lck(trim_mtx);
+  return sealing_ctx->controllers->deallocate(TRIM_QPAIR, block_offset, num_blocks);
 }
 
 extern "C"

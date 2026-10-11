@@ -599,6 +599,7 @@ func addSealingTasks(
 			cfg.Seal.BatchSealPipelines,
 			!cfg.Seal.SingleHasherPerThread,
 			cfg.Seal.LayerNVMEDevices,
+			!cfg.Seal.LayerNVMEDisableTrim,
 			machineHostPort, db, full, stor, si, slr)
 		if err != nil {
 			return nil, nil, sp, nil, nil, nil, nil, xerrors.Errorf("setting up batch sealer: %w", err)

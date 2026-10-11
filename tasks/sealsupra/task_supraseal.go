@@ -5,9 +5,11 @@ import (
 	"database/sql"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
+	"sync"
 	"time"
 
 	logging "github.com/ipfs/go-log/v2"
@@ -71,7 +73,7 @@ type SupraSeal struct {
 
 type P2Active func() bool
 
-func NewSupraSeal(sectorSize string, batchSize, pipelines int, dualHashers bool, nvmeDevices []string, machineHostAndPort string,
+func NewSupraSeal(sectorSize string, batchSize, pipelines int, dualHashers bool, nvmeDevices []string, trimLayers bool, machineHostAndPort string,
 	db *harmonydb.DB, api SupraSealNodeAPI, storage *paths.Remote, sindex paths.SectorIndex, sc *ffi.SealCalls) (*SupraSeal, *slotmgr.SlotMgr, P2Active, error) {
 
 	// Check CPU features before initializing supraseal
@@ -240,6 +242,41 @@ func NewSupraSeal(sectorSize string, batchSize, pipelines int, dualHashers bool,
 	slots, err := slotmgr.NewSlotMgr(db, machineHostAndPort, slotOffs)
 	if err != nil {
 		return nil, nil, nil, xerrors.Errorf("creating slot manager: %w", err)
+	}
+
+	if trimLayers {
+		// Deallocate layer storage once a slot is no longer needed: when all
+		// sectors of its batch are finalized (C1 no longer reads the layers),
+		// when a batch is aborted, and - right now - for every slot without
+		// sectors waiting for C1/finalization. Telling the drives the data is
+		// dead keeps their free space up and write amplification down.
+		var warnUnsupported sync.Once
+		trim := func(off, blocks uint64) error {
+			err := supraffi.TrimBlocks(off, blocks, uint64(ssize))
+			if errors.Is(err, supraffi.ErrTrimUnsupported) {
+				warnUnsupported.Do(func() {
+					log.Warnw("some layer NVMe devices do not support deallocation (trim); layer storage is not trimmed on those devices")
+				})
+				return nil
+			}
+			return err
+		}
+		slots.EnableTrim(func(slotOff uint64) error {
+			return trim(slotOff, slotSize)
+		})
+
+		// Space past the last slot is never used by this configuration, but
+		// may hold data from a previous one with more pipelines.
+		if used := slotSize * uint64(pipelines); space > used {
+			go func() {
+				start := time.Now()
+				if err := trim(used, space-used); err != nil {
+					log.Errorw("trimming unused layer NVMe space", "from_block", used, "blocks", space-used, "error", err)
+					return
+				}
+				log.Infow("trimmed unused layer NVMe space", "from_block", used, "blocks", space-used, "took", time.Since(start))
+			}()
+		}
 	}
 
 	ssl := &SupraSeal{

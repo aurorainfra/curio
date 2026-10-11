@@ -1,6 +1,9 @@
 // Copyright Supranational LLC
 
 #include <iostream>
+#include <algorithm>
+#include <cerrno>
+#include <vector>
 
 #ifndef __NVME_CONTROLLER_T_HPP__
 #define __NVME_CONTROLLER_T_HPP__
@@ -238,6 +241,116 @@ public:
     return 0;
   }
 
+  // Whether the controller supports the Dataset Management command (TRIM).
+  bool supports_deallocate() {
+    const struct spdk_nvme_ctrlr_data* cdata = spdk_nvme_ctrlr_get_data(ctrlr);
+    return cdata != nullptr && cdata->oncs.dsm;
+  }
+
+private:
+  struct dsm_ctx_t {
+    size_t outstanding;
+    bool   failed;
+  };
+
+  static void dsm_complete(void *arg, const struct spdk_nvme_cpl *completion) {
+    dsm_ctx_t* ctx = (dsm_ctx_t*)arg;
+    if (spdk_nvme_cpl_is_error(completion)) {
+      ctx->failed = true;
+    }
+    ctx->outstanding--;
+  }
+
+  // Issue deallocate commands covering LBAs [lba, end) with at most
+  // ranges_per_cmd ranges of at most range_lbas LBAs each. Returns true when
+  // every command completed successfully.
+  bool deallocate_pass(struct spdk_nvme_ns* ns, struct spdk_nvme_qpair* qp,
+                       uint64_t lba, uint64_t end,
+                       uint16_t ranges_per_cmd, uint64_t range_lbas) {
+    const size_t max_inflight = 32;
+    dsm_ctx_t ctx = {0, false};
+    std::vector<struct spdk_nvme_dsm_range> ranges(ranges_per_cmd);
+
+    while (lba < end && !ctx.failed) {
+      uint16_t n = 0;
+      uint64_t next = lba;
+      while (n < ranges_per_cmd && next < end) {
+        uint64_t len = std::min(range_lbas, end - next);
+        ranges[n].attributes.raw = 0;
+        ranges[n].length = (uint32_t)len;
+        ranges[n].starting_lba = next;
+        next += len;
+        n++;
+      }
+
+      while (ctx.outstanding >= max_inflight) {
+        spdk_nvme_qpair_process_completions(qp, 0);
+      }
+      int rc = spdk_nvme_ns_cmd_dataset_management(ns, qp, SPDK_NVME_DSM_ATTR_DEALLOCATE,
+                                                   ranges.data(), n, dsm_complete, &ctx);
+      if (rc == -ENOMEM) {
+        // Out of request objects; drain some completions and retry this command
+        spdk_nvme_qpair_process_completions(qp, 0);
+        continue;
+      }
+      if (rc != 0) {
+        ctx.failed = true;
+        break;
+      }
+      ctx.outstanding++;
+      lba = next;
+    }
+
+    while (ctx.outstanding > 0) {
+      spdk_nvme_qpair_process_completions(qp, 0);
+    }
+    return !ctx.failed;
+  }
+
+public:
+  // Deallocate (TRIM) num_blocks BLOCK_SIZE blocks starting at block_offset.
+  //
+  // Synchronous. Must only be called on a qpair no other thread is using.
+  // Unlike read/write, errors are reported instead of aborting the process:
+  // deallocation is advisory and the caller can carry on without it.
+  //
+  // Returns 0 on success, 1 if the controller does not support deallocation,
+  // -1 on error.
+  int deallocate(size_t ns_id, size_t qpair_id, size_t block_offset, size_t num_blocks) {
+    if (!supports_deallocate()) {
+      return 1;
+    }
+    if (num_blocks == 0) {
+      return 0;
+    }
+
+    nvme_namespace_t& ns = namespaces[ns_id];
+    struct spdk_nvme_qpair* qp = qpairs[qpair_id]->get_qpair();
+    uint64_t sector_size = ns.get_sector_size();
+    uint64_t sectors_per_block = BLOCK_SIZE / sector_size;
+    uint64_t lba = block_offset * sectors_per_block;
+    uint64_t end = (block_offset + num_blocks) * sectors_per_block;
+    if (end > ns.get_sector_count()) {
+      fprintf(stderr, "deallocate on %s: range [%lu, %lu) beyond namespace end %lu\n",
+              name.c_str(), lba, end, (uint64_t)ns.get_sector_count());
+      return -1;
+    }
+
+    // Large commands first; some drives limit the number or size of ranges
+    // per command (DMRL/DMRSL), so fall back to small single-range commands.
+    // Deallocating a range twice is harmless.
+    if (deallocate_pass(ns.get_ns(), qp, lba, end, 64, (1ull << 30) / sector_size)) {
+      return 0;
+    }
+    fprintf(stderr, "deallocate on %s: large commands failed, retrying with single 64MiB ranges\n",
+            name.c_str());
+    if (deallocate_pass(ns.get_ns(), qp, lba, end, 1, (64ull << 20) / sector_size)) {
+      return 0;
+    }
+    fprintf(stderr, "deallocate on %s: failed\n", name.c_str());
+    return -1;
+  }
+
   size_t get_outstanding_io_ops(size_t qpair) {
     return qpairs[qpair]->get_outstanding_io_ops();
   }
@@ -372,6 +485,22 @@ public:
 
   nvme_controller_t &operator[](size_t i) {
     return *controllers[i];
+  }
+
+  // Deallocate (TRIM) the same block range on every controller. Returns 0 on
+  // success, 1 if some controller does not support deallocation (the others
+  // are still trimmed), -1 if any deallocation failed.
+  int deallocate(size_t qpair_id, size_t block_offset, size_t num_blocks) {
+    int res = 0;
+    for (auto it: controllers) {
+      int rc = it->deallocate(0, qpair_id, block_offset, num_blocks);
+      if (rc < 0) {
+        res = -1;
+      } else if (rc > 0 && res == 0) {
+        res = 1;
+      }
+    }
+    return res;
   }
 
   // Remove controller from the list
