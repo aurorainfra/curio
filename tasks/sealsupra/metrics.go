@@ -34,6 +34,13 @@ var SupraSealMeasures = struct {
 	NVMeBytesWritten *stats.Int64Measure
 	NVMeReadIO       *stats.Int64Measure
 	NVMeWriteIO      *stats.Int64Measure
+
+	// NVMe namespace allocation (Identify Namespace) and trim
+	NVMeNamespaceSize      *stats.Int64Measure
+	NVMeNamespaceCapacity  *stats.Int64Measure
+	NVMeNamespaceAllocated *stats.Int64Measure
+	NVMeThinProvisioned    *stats.Int64Measure
+	NVMeTrimmedBytes       *stats.Int64Measure
 }{
 	PhaseLockCount:     stats.Int64(pre+"phase_lock_count", "Number of active locks in each phase", stats.UnitDimensionless),
 	PhaseWaitingCount:  stats.Int64(pre+"phase_waiting_count", "Number of goroutines waiting for a phase lock", stats.UnitDimensionless),
@@ -55,6 +62,12 @@ var SupraSealMeasures = struct {
 	NVMeBytesWritten: stats.Int64(pre+"nvme_bytes_written", "NVMe Bytes Written", stats.UnitBytes),
 	NVMeReadIO:       stats.Int64(pre+"nvme_read_io", "NVMe Read IOs", stats.UnitDimensionless),
 	NVMeWriteIO:      stats.Int64(pre+"nvme_write_io", "NVMe Write IOs", stats.UnitDimensionless),
+
+	NVMeNamespaceSize:      stats.Int64(pre+"nvme_namespace_size_bytes", "NVMe namespace size (NSZE)", stats.UnitBytes),
+	NVMeNamespaceCapacity:  stats.Int64(pre+"nvme_namespace_capacity_bytes", "NVMe namespace capacity (NCAP)", stats.UnitBytes),
+	NVMeNamespaceAllocated: stats.Int64(pre+"nvme_namespace_allocated_bytes", "NVMe namespace allocated bytes (NUSE); only tracks trim on drives which support it", stats.UnitBytes),
+	NVMeThinProvisioned:    stats.Int64(pre+"nvme_thin_provisioned", "NVMe namespace reports thin provisioning (NSFEAT.THINP), 1=yes", stats.UnitDimensionless),
+	NVMeTrimmedBytes:       stats.Int64(pre+"nvme_trimmed_bytes", "Bytes of layer NVMe storage trimmed (deallocated), summed over all devices", stats.UnitBytes),
 }
 
 // init registers the views for SupraSeal metrics.
@@ -155,6 +168,30 @@ func init() {
 			Measure:     SupraSealMeasures.NVMeWriteIO,
 			Aggregation: view.Sum(),
 			TagKeys:     []tag.Key{nvmeDeviceKey},
+		},
+		&view.View{
+			Measure:     SupraSealMeasures.NVMeNamespaceSize,
+			Aggregation: view.LastValue(),
+			TagKeys:     []tag.Key{nvmeDeviceKey},
+		},
+		&view.View{
+			Measure:     SupraSealMeasures.NVMeNamespaceCapacity,
+			Aggregation: view.LastValue(),
+			TagKeys:     []tag.Key{nvmeDeviceKey},
+		},
+		&view.View{
+			Measure:     SupraSealMeasures.NVMeNamespaceAllocated,
+			Aggregation: view.LastValue(),
+			TagKeys:     []tag.Key{nvmeDeviceKey},
+		},
+		&view.View{
+			Measure:     SupraSealMeasures.NVMeThinProvisioned,
+			Aggregation: view.LastValue(),
+			TagKeys:     []tag.Key{nvmeDeviceKey},
+		},
+		&view.View{
+			Measure:     SupraSealMeasures.NVMeTrimmedBytes,
+			Aggregation: view.Sum(),
 		},
 	)
 	if err != nil {

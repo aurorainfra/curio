@@ -291,6 +291,19 @@ int node_read(size_t sector_size, size_t num_sectors, uint64_t node_to_read) {
   return 0;
 }
 
+// Fills usage with the current namespace size/allocation of each layer NVMe
+// device, in controller order. Returns the number of entries written.
+extern "C"
+size_t get_nvme_ns_usage(nvme_ns_usage* usage, size_t max_controllers, size_t sector_size) {
+  init_ctx(sector_size);
+  auto all = sealing_ctx->controllers->get_ns_usage();
+  size_t count = std::min(all.size(), max_controllers);
+  for (size_t i = 0; i < count; i++) {
+    usage[i] = all[i];
+  }
+  return count;
+}
+
 static std::mutex trim_mtx;
 
 // Deallocate (TRIM) num_blocks BLOCK_SIZE blocks starting at block_offset on

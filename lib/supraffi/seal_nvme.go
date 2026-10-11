@@ -33,6 +33,18 @@ typedef struct nvme_health_info {
 
 size_t get_nvme_health_info(nvme_health_info_t* health_infos, size_t max_controllers);
 
+typedef struct nvme_ns_usage {
+        char     name[32];
+        uint64_t size_blocks;
+        uint64_t capacity_blocks;
+        uint64_t used_blocks;
+        uint32_t block_size;
+        uint8_t  thin_provisioned;
+        int32_t  status;
+  } nvme_ns_usage_t;
+
+size_t get_nvme_ns_usage(nvme_ns_usage_t* usage, size_t max_controllers, size_t sector_size);
+
 */
 import "C"
 import (
@@ -182,6 +194,36 @@ func C1(blockOffset uint64, numSectors, sectorSlot int, replicaID, seed, ticket 
 // GetMaxBlockOffset returns the highest available block offset from NVMe devices.
 func GetMaxBlockOffset(sectorSize uint64) uint64 {
 	return uint64(C.get_max_block_offset(C.size_t(sectorSize)))
+}
+
+// GetNamespaceUsage reads the current namespace size and allocation of every
+// layer NVMe device with a fresh Identify Namespace. Devices whose query failed
+// are left out; an error is returned only if no device could be queried.
+func GetNamespaceUsage(sectorSize uint64) ([]NamespaceUsage, error) {
+	const maxControllers = 64
+	raw := make([]C.nvme_ns_usage_t, maxControllers)
+
+	count := int(C.get_nvme_ns_usage(&raw[0], C.size_t(maxControllers), C.size_t(sectorSize)))
+
+	out := make([]NamespaceUsage, 0, count)
+	for i := 0; i < count; i++ {
+		r := raw[i]
+		if r.status != 0 {
+			continue
+		}
+		bs := uint64(r.block_size)
+		out = append(out, NamespaceUsage{
+			Device:          C.GoString(&r.name[0]),
+			SizeBytes:       uint64(r.size_blocks) * bs,
+			CapacityBytes:   uint64(r.capacity_blocks) * bs,
+			AllocatedBytes:  uint64(r.used_blocks) * bs,
+			ThinProvisioned: r.thin_provisioned != 0,
+		})
+	}
+	if len(out) == 0 && count > 0 {
+		return nil, fmt.Errorf("identify namespace failed on all %d nvme devices", count)
+	}
+	return out, nil
 }
 
 // TrimBlocks deallocates (NVMe TRIM) numBlocks blocks starting at blockOffset

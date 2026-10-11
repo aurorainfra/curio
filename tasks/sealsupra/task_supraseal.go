@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"sync"
 	"time"
 
@@ -159,8 +160,24 @@ func NewSupraSeal(sectorSize string, batchSize, pipelines int, dualHashers bool,
 		log.Infow("nvme health page", "hp", hp)
 	}
 
+	// Number of layer devices which report namespace usage; also used to
+	// account trimmed bytes (a trim covers the same range on every device).
+	var nsDevices int
+	if usage, err := supraffi.GetNamespaceUsage(uint64(ssize)); err != nil {
+		log.Warnw("nvme namespace usage", "error", err)
+	} else {
+		nsDevices = len(usage)
+		for _, u := range usage {
+			log.Infow("nvme namespace usage", "device", u.Device, "size", u.SizeBytes, "capacity", u.CapacityBytes,
+				"allocated", u.AllocatedBytes, "thin_provisioned", u.ThinProvisioned)
+		}
+	}
+
+	// supraseal orders controllers (and so health info entries) by PCI address
+	healthDevices := slices.Sorted(slices.Values(nvmeDevices))
+
 	// Initialize previous health infos slice
-	prevHealthInfos := make([]supraffi.HealthInfo, len(nvmeDevices))
+	prevHealthInfos := make([]supraffi.HealthInfo, len(healthDevices))
 
 	go func() {
 		const intervalSeconds = 30
@@ -175,11 +192,11 @@ func NewSupraSeal(sectorSize string, batchSize, pipelines int, dualHashers bool,
 			}
 
 			for i, hi := range healthInfos {
-				if i >= len(nvmeDevices) {
+				if i >= len(healthDevices) {
 					log.Warnw("More health info entries than nvme devices", "index", i)
 					break
 				}
-				deviceName := nvmeDevices[i]
+				deviceName := healthDevices[i]
 
 				ctx, err := tag.New(
 					context.Background(),
@@ -218,6 +235,8 @@ func NewSupraSeal(sectorSize string, batchSize, pipelines int, dualHashers bool,
 				// Update previous health info
 				prevHealthInfos[i] = hi
 			}
+
+			recordNamespaceUsage(uint64(ssize))
 		}
 	}()
 
@@ -259,6 +278,9 @@ func NewSupraSeal(sectorSize string, batchSize, pipelines int, dualHashers bool,
 				})
 				return nil
 			}
+			if err == nil {
+				stats.Record(context.Background(), SupraSealMeasures.NVMeTrimmedBytes.M(int64(blocks*layerBlockSize*uint64(nsDevices))))
+			}
 			return err
 		}
 		slots.EnableTrim(func(slotOff uint64) error {
@@ -297,6 +319,38 @@ func NewSupraSeal(sectorSize string, batchSize, pipelines int, dualHashers bool,
 	}
 
 	return ssl, slots, ssl.outSDR.IsInPhase(), nil
+}
+
+// layerBlockSize is the size of the blocks supraseal addresses layer NVMe
+// storage in (BLOCK_SIZE / PAGE_SIZE in supraseal).
+const layerBlockSize = 4096
+
+// recordNamespaceUsage exports the current size and allocation of every layer
+// NVMe device namespace.
+func recordNamespaceUsage(sectorSize uint64) {
+	usage, err := supraffi.GetNamespaceUsage(sectorSize)
+	if err != nil {
+		log.Errorw("nvme namespace usage", "error", err)
+		return
+	}
+
+	for _, u := range usage {
+		ctx, err := tag.New(context.Background(), tag.Insert(nvmeDeviceKey, u.Device))
+		if err != nil {
+			log.Errorw("Failed to create context with tags", "error", err)
+			continue
+		}
+
+		thin := int64(0)
+		if u.ThinProvisioned {
+			thin = 1
+		}
+		stats.Record(ctx,
+			SupraSealMeasures.NVMeNamespaceSize.M(int64(u.SizeBytes)),
+			SupraSealMeasures.NVMeNamespaceCapacity.M(int64(u.CapacityBytes)),
+			SupraSealMeasures.NVMeNamespaceAllocated.M(int64(u.AllocatedBytes)),
+			SupraSealMeasures.NVMeThinProvisioned.M(thin))
+	}
 }
 
 func (s *SupraSeal) Do(ctx context.Context, taskID harmonytask.TaskID, stillOwned func() bool) (done bool, err error) {

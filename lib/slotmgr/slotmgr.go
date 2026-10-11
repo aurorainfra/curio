@@ -182,6 +182,9 @@ func (s *SlotMgr) startTrimLocked(slt *slot, reason string) {
 			stats.Record(context.Background(), SlotMgrMeasures.SlotErrors.M(1))
 		} else {
 			log.Infow("trimmed slot", "slot", slt.slotOffset, "reason", reason, "took", time.Since(start))
+			stats.Record(context.Background(),
+				SlotMgrMeasures.SlotsTrimmed.M(1),
+				SlotMgrMeasures.TrimDuration.M(time.Since(start).Seconds()))
 		}
 
 		s.lk.Lock()
@@ -390,8 +393,14 @@ func (s *SlotMgr) recordSlotMetrics(slt *slot) {
 		inUse = 1
 	}
 
+	trimming := int64(0)
+	if slt.trimming {
+		trimming = 1
+	}
+
 	stats.Record(ctx,
 		SlotMgrSlotMeasures.SlotInUse.M(inUse),
 		SlotMgrSlotMeasures.SlotSectorCount.M(int64(len(slt.sectors))),
+		SlotMgrSlotMeasures.SlotTrimming.M(trimming),
 	)
 }

@@ -9,6 +9,17 @@ import (
 // not support deallocation (Dataset Management).
 var ErrTrimUnsupported = errors.New("nvme device does not support deallocation (trim)")
 
+// NamespaceUsage is the size and allocation of a layer NVMe device's namespace.
+// AllocatedBytes (NVMe NUSE) only reflects deallocation (trim) on devices
+// which track it; others may report it equal to CapacityBytes.
+type NamespaceUsage struct {
+	Device          string // PCI address
+	SizeBytes       uint64 // NSZE
+	CapacityBytes   uint64 // NCAP
+	AllocatedBytes  uint64 // NUSE
+	ThinProvisioned bool   // NSFEAT.THINP
+}
+
 // HealthInfo represents NVMe device health information in a more Go-friendly format
 type HealthInfo struct {
 	// Critical warning flags

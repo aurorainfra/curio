@@ -257,11 +257,16 @@ This document lists Prometheus metrics exported by Curio using the exact metric 
 | `curio_sealsupra_nvme_critical_warning` | gauge | `nvme_device` | NVMe Critical Warning Flags |
 | `curio_sealsupra_nvme_error_log_entries` | gauge | `nvme_device` | NVMe Error Log Entries |
 | `curio_sealsupra_nvme_media_errors` | gauge | `nvme_device` | NVMe Media Errors |
+| `curio_sealsupra_nvme_namespace_allocated_bytes` | gauge | `nvme_device` | NVMe namespace allocated bytes (NUSE); only tracks trim on drives which support it |
+| `curio_sealsupra_nvme_namespace_capacity_bytes` | gauge | `nvme_device` | NVMe namespace capacity (NCAP) |
+| `curio_sealsupra_nvme_namespace_size_bytes` | gauge | `nvme_device` | NVMe namespace size (NSZE) |
 | `curio_sealsupra_nvme_percentage_used` | gauge | `nvme_device` | NVMe Percentage Used |
 | `curio_sealsupra_nvme_power_cycles` | gauge | `nvme_device` | NVMe Power Cycles |
 | `curio_sealsupra_nvme_power_on_hours` | gauge | `nvme_device` | NVMe Power On Hours |
 | `curio_sealsupra_nvme_read_io` | counter | `nvme_device` | NVMe Read IOs |
 | `curio_sealsupra_nvme_temperature_celsius` | gauge | `nvme_device` | NVMe Temperature in Celsius |
+| `curio_sealsupra_nvme_thin_provisioned` | gauge | `nvme_device` | NVMe namespace reports thin provisioning (NSFEAT.THINP), 1=yes |
+| `curio_sealsupra_nvme_trimmed_bytes` | counter | — | Bytes of layer NVMe storage trimmed (deallocated), summed over all devices |
 | `curio_sealsupra_nvme_unsafe_shutdowns` | gauge | `nvme_device` | NVMe Unsafe Shutdowns |
 | `curio_sealsupra_nvme_write_io` | counter | `nvme_device` | NVMe Write IOs |
 | `curio_sealsupra_phase_avg_duration` | gauge | `phase` | Average duration of each phase in seconds |
@@ -271,9 +276,12 @@ This document lists Prometheus metrics exported by Curio using the exact metric 
 | `curio_slotmgr_slot_errors` | counter | — | Total number of slot errors (e.g., failed to put). |
 | `curio_slotmgr_slot_in_use` | gauge | `slot_offset` | Slot actively in use (batch sealing). 1=in use, 0=not in use |
 | `curio_slotmgr_slot_sector_count` | gauge | `slot_offset` | Number of sectors in the slot |
+| `curio_slotmgr_slot_trim_duration_seconds` | histogram | — | Time taken to trim (deallocate) a slot's storage. |
+| `curio_slotmgr_slot_trimming` | gauge | `slot_offset` | Slot storage is being trimmed (deallocated). 1=trimming, 0=not |
 | `curio_slotmgr_slots_acquired` | counter | — | Total number of slots acquired. |
 | `curio_slotmgr_slots_available` | gauge | — | Number of available slots. |
 | `curio_slotmgr_slots_released` | counter | — | Total number of slots released. |
+| `curio_slotmgr_slots_trimmed` | counter | — | Total number of slot storage trims (deallocations) completed. |
 
 ---
 

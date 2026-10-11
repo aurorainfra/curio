@@ -2,11 +2,25 @@
 
 #include <iostream>
 #include <algorithm>
+#include <atomic>
 #include <cerrno>
 #include <vector>
 
 #ifndef __NVME_CONTROLLER_T_HPP__
 #define __NVME_CONTROLLER_T_HPP__
+
+// Namespace size and allocation, from Identify Namespace. Sizes in blocks of
+// block_size bytes. used_blocks (NUSE) only tracks deallocation on drives which
+// support it; others may report it equal to capacity_blocks.
+struct nvme_ns_usage {
+    char     name[32];
+    uint64_t size_blocks;      // NSZE
+    uint64_t capacity_blocks;  // NCAP
+    uint64_t used_blocks;      // NUSE
+    uint32_t block_size;
+    uint8_t  thin_provisioned; // NSFEAT.THINP
+    int32_t  status;           // 0 = ok
+};
 
 struct nvme_health_info {
     uint8_t  critical_warning;
@@ -241,6 +255,55 @@ public:
     return 0;
   }
 
+private:
+  static void identify_completion(void *arg, const struct spdk_nvme_cpl *cpl) {
+    std::atomic<int>* state = (std::atomic<int>*)arg;
+    state->store(spdk_nvme_cpl_is_error(cpl) ? 2 : 1);
+  }
+
+public:
+  // Read the current namespace size/allocation with a fresh Identify
+  // Namespace; SPDK's cached namespace data is not refreshed on its own.
+  // Uses the admin queue, which SPDK serializes internally.
+  nvme_ns_usage get_ns_usage(size_t ns_id) {
+    nvme_ns_usage usage = {};
+    snprintf(usage.name, sizeof(usage.name), "%s", name.c_str());
+    usage.status = -1;
+
+    nvme_namespace_t& ns = namespaces[ns_id];
+    usage.block_size = ns.get_sector_size();
+
+    struct spdk_nvme_ns_data* data = (struct spdk_nvme_ns_data*)
+      spdk_dma_zmalloc(sizeof(struct spdk_nvme_ns_data), 4096, NULL);
+    if (data == nullptr) {
+      return usage;
+    }
+
+    struct spdk_nvme_cmd cmd = {};
+    cmd.opc = SPDK_NVME_OPC_IDENTIFY;
+    cmd.nsid = spdk_nvme_ns_get_id(ns.get_ns());
+    cmd.cdw10_bits.identify.cns = SPDK_NVME_IDENTIFY_NS;
+
+    std::atomic<int> state(0);
+    int rc = spdk_nvme_ctrlr_cmd_admin_raw(ctrlr, &cmd, data, sizeof(struct spdk_nvme_ns_data),
+                                           identify_completion, &state);
+    if (rc == 0) {
+      while (state.load() == 0) {
+        spdk_nvme_ctrlr_process_admin_completions(ctrlr);
+        usleep(100);
+      }
+      if (state.load() == 1) {
+        usage.size_blocks = data->nsze;
+        usage.capacity_blocks = data->ncap;
+        usage.used_blocks = data->nuse;
+        usage.thin_provisioned = data->nsfeat.thin_prov;
+        usage.status = 0;
+      }
+    }
+    spdk_dma_free(data);
+    return usage;
+  }
+
   // Whether the controller supports the Dataset Management command (TRIM).
   bool supports_deallocate() {
     const struct spdk_nvme_ctrlr_data* cdata = spdk_nvme_ctrlr_get_data(ctrlr);
@@ -471,6 +534,14 @@ public:
     }
     
     return health_infos;
+  }
+
+  std::vector<nvme_ns_usage> get_ns_usage() {
+    std::vector<nvme_ns_usage> usage;
+    for (auto it: controllers) {
+      usage.push_back(it->get_ns_usage(0));
+    }
+    return usage;
   }
 
   void print_temperatures() {

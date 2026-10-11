@@ -58,6 +58,12 @@ func GetMaxBlockOffset(sectorSize uint64) uint64 {
 	panic("GetMaxBlockOffset: supraseal is only available on Linux")
 }
 
+// GetNamespaceUsage reads the current namespace size and allocation of every
+// layer NVMe device.
+func GetNamespaceUsage(sectorSize uint64) ([]NamespaceUsage, error) {
+	panic("GetNamespaceUsage: supraseal is only available on Linux")
+}
+
 // TrimBlocks deallocates (NVMe TRIM) numBlocks blocks starting at blockOffset
 // on every layer NVMe device.
 func TrimBlocks(blockOffset, numBlocks, sectorSize uint64) error {

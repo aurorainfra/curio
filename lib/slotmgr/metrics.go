@@ -19,20 +19,26 @@ var SlotMgrMeasures = struct {
 	SlotsAcquired  *stats.Int64Measure
 	SlotsReleased  *stats.Int64Measure
 	SlotErrors     *stats.Int64Measure
+	SlotsTrimmed   *stats.Int64Measure
+	TrimDuration   *stats.Float64Measure
 }{
 	SlotsAvailable: stats.Int64(pre+"slots_available", "Number of available slots.", stats.UnitDimensionless),
 	SlotsAcquired:  stats.Int64(pre+"slots_acquired", "Total number of slots acquired.", stats.UnitDimensionless),
 	SlotsReleased:  stats.Int64(pre+"slots_released", "Total number of slots released.", stats.UnitDimensionless),
 	SlotErrors:     stats.Int64(pre+"slot_errors", "Total number of slot errors (e.g., failed to put).", stats.UnitDimensionless),
+	SlotsTrimmed:   stats.Int64(pre+"slots_trimmed", "Total number of slot storage trims (deallocations) completed.", stats.UnitDimensionless),
+	TrimDuration:   stats.Float64(pre+"slot_trim_duration_seconds", "Time taken to trim (deallocate) a slot's storage.", stats.UnitSeconds),
 }
 
 // SlotMgrSlotMeasures groups per-slot metrics.
 var SlotMgrSlotMeasures = struct {
 	SlotInUse       *stats.Int64Measure
 	SlotSectorCount *stats.Int64Measure
+	SlotTrimming    *stats.Int64Measure
 }{
 	SlotInUse:       stats.Int64(pre+"slot_in_use", "Slot actively in use (batch sealing). 1=in use, 0=not in use", stats.UnitDimensionless),
 	SlotSectorCount: stats.Int64(pre+"slot_sector_count", "Number of sectors in the slot", stats.UnitDimensionless),
+	SlotTrimming:    stats.Int64(pre+"slot_trimming", "Slot storage is being trimmed (deallocated). 1=trimming, 0=not", stats.UnitDimensionless),
 }
 
 func init() {
@@ -57,6 +63,16 @@ func init() {
 			Description: "Total number of slot errors",
 			Aggregation: view.Sum(),
 		},
+		&view.View{
+			Measure:     SlotMgrMeasures.SlotsTrimmed,
+			Description: "Total number of slot storage trims completed",
+			Aggregation: view.Sum(),
+		},
+		&view.View{
+			Measure:     SlotMgrMeasures.TrimDuration,
+			Description: "Slot storage trim duration in seconds",
+			Aggregation: view.Distribution(1, 5, 15, 30, 60, 120, 300, 600, 1800),
+		},
 
 		// Register per-slot metrics
 		&view.View{
@@ -68,6 +84,12 @@ func init() {
 		&view.View{
 			Measure:     SlotMgrSlotMeasures.SlotSectorCount,
 			Description: "Number of sectors in a slot",
+			TagKeys:     []tag.Key{KeySlotOffset},
+			Aggregation: view.LastValue(),
+		},
+		&view.View{
+			Measure:     SlotMgrSlotMeasures.SlotTrimming,
+			Description: "Slot storage is being trimmed (1) or not (0)",
 			TagKeys:     []tag.Key{KeySlotOffset},
 			Aggregation: view.LastValue(),
 		},
