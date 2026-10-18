@@ -1410,4 +1410,57 @@ description: The default curio configuration
   # type: time.Duration
   #ProveTimeout = "30m0s"
 
+
+# Aurora holds configuration for Aurora-specific subsystems.
+#
+# type: AuroraConfig
+[Aurora]
+
+  # MCP configures the read-only diagnostics MCP (Model Context Protocol)
+  # server served at /mcp on the GUI address.
+  #
+  # type: AuroraMCPConfig
+  [Aurora.MCP]
+
+    # Enable serves the MCP endpoint on this node's GUI address. Requires a
+    # restart to take effect. (Default: false)
+    #
+    # type: bool
+    #Enable = false
+
+    # Tokens lists the agents allowed to use the MCP endpoint. Each agent
+    # sends "Authorization: Bearer <token>". Only the SHA-256 of the token is
+    # stored here, so the config (visible in the web UI) does not leak usable
+    # tokens. Generate one with:
+    # tok=$(openssl rand -hex 32); echo "$tok"; echo -n "$tok" | sha256sum
+    # Updates apply to running nodes, so tokens can be added, rotated and
+    # disabled without a restart.
+    # Updates will affect running instances.
+    #
+    # type: []AuroraMCPToken
+    #Tokens = []
+
+    # MaxOutputBytes caps the size of a single tool result returned to the
+    # agent. Larger results are truncated. (Default: 262144)
+    # Updates will affect running instances.
+    #
+    # type: int
+    #MaxOutputBytes = 262144
+
+    # ToolTimeout bounds the runtime of a single tool call. (Default: 1m)
+    # Updates will affect running instances.
+    #
+    # type: time.Duration
+    #ToolTimeout = "1m0s"
+
+    # LogFiles lists additional log files the log tools may read on this
+    # node, besides the file go-log writes to (GOLOG_FILE) and a file
+    # stdout/stderr is redirected to. Rotated siblings (<file>.N,
+    # <file>-<suffix>, optionally .gz) are discovered automatically. Set this
+    # in a node-specific layer when logs are written by an external
+    # redirect. Requires a restart to take effect.
+    #
+    # type: []string
+    #LogFiles = []
+
 ```

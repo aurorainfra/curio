@@ -47,6 +47,83 @@ Required when URL is a stateless /notify endpoint; leave empty for a stateful /n
 			Comment: `Tag restricts delivery to Apprise URLs carrying this tag. Only applies to stateful configs. OPTIONAL.`,
 		},
 	},
+	"AuroraConfig": {
+		{
+			Name: "MCP",
+			Type: "AuroraMCPConfig",
+
+			Comment: `MCP configures the read-only diagnostics MCP (Model Context Protocol)
+server served at /mcp on the GUI address.`,
+		},
+	},
+	"AuroraMCPConfig": {
+		{
+			Name: "Enable",
+			Type: "bool",
+
+			Comment: `Enable serves the MCP endpoint on this node's GUI address. Requires a
+restart to take effect. (Default: false)`,
+		},
+		{
+			Name: "Tokens",
+			Type: "[]AuroraMCPToken",
+
+			Comment: `Tokens lists the agents allowed to use the MCP endpoint. Each agent
+sends "Authorization: Bearer <token>". Only the SHA-256 of the token is
+stored here, so the config (visible in the web UI) does not leak usable
+tokens. Generate one with:
+tok=$(openssl rand -hex 32); echo "$tok"; echo -n "$tok" | sha256sum
+Updates apply to running nodes, so tokens can be added, rotated and
+disabled without a restart.
+Updates will affect running instances.`,
+		},
+		{
+			Name: "MaxOutputBytes",
+			Type: "int",
+
+			Comment: `MaxOutputBytes caps the size of a single tool result returned to the
+agent. Larger results are truncated. (Default: 262144)
+Updates will affect running instances.`,
+		},
+		{
+			Name: "ToolTimeout",
+			Type: "time.Duration",
+
+			Comment: `ToolTimeout bounds the runtime of a single tool call. (Default: 1m)
+Updates will affect running instances.`,
+		},
+		{
+			Name: "LogFiles",
+			Type: "[]string",
+
+			Comment: `LogFiles lists additional log files the log tools may read on this
+node, besides the file go-log writes to (GOLOG_FILE) and a file
+stdout/stderr is redirected to. Rotated siblings (<file>.N,
+<file>-<suffix>, optionally .gz) are discovered automatically. Set this
+in a node-specific layer when logs are written by an external
+redirect. Requires a restart to take effect.`,
+		},
+	},
+	"AuroraMCPToken": {
+		{
+			Name: "Name",
+			Type: "string",
+
+			Comment: `Name identifies the agent in the MCP tool-call log.`,
+		},
+		{
+			Name: "TokenSHA256",
+			Type: "string",
+
+			Comment: `TokenSHA256 is the hex-encoded SHA-256 of the bearer token.`,
+		},
+		{
+			Name: "Disabled",
+			Type: "bool",
+
+			Comment: `Disabled revokes the token without removing it.`,
+		},
+	},
 	"BalanceManagerConfig": {
 		{
 			Name: "MK12Collateral",
@@ -433,6 +510,12 @@ Updates will affect running instances.`,
 			Comment: `Cuzk configures integration with the cuzk proving daemon.
 When enabled, SNARK proving tasks (PoRep C2, SnapDeals prove, and PSProve) are delegated
 to an external cuzk daemon over gRPC instead of using local GPU resources.`,
+		},
+		{
+			Name: "Aurora",
+			Type: "AuroraConfig",
+
+			Comment: `Aurora holds configuration for Aurora-specific subsystems.`,
 		},
 	},
 	"CurioFees": {

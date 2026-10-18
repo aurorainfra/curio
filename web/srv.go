@@ -22,6 +22,7 @@ import (
 	logging "github.com/ipfs/go-log/v2"
 	"go.opencensus.io/tag"
 
+	auroramcp "github.com/filecoin-project/curio/aurora/mcp"
 	"github.com/filecoin-project/curio/deps"
 	"github.com/filecoin-project/curio/web/api"
 
@@ -109,6 +110,7 @@ func GetSrv(ctx context.Context, deps *deps.Deps, devMode bool) (*http.Server, e
 		})
 	}
 
+	mx.PathPrefix(auroramcp.PathPrefix).Handler(auroramcp.Handler(deps))
 	if !devMode {
 		api.Routes(mx.PathPrefix("/api").Subrouter(), deps, webDev)
 	} else {

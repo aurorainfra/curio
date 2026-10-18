@@ -136,6 +136,14 @@ func DefaultCurioConfig() *CurioConfig {
 			MaxPending:   10,
 			ProveTimeout: 30 * time.Minute,
 		},
+		Aurora: AuroraConfig{
+			MCP: AuroraMCPConfig{
+				Tokens:         NewDynamic([]AuroraMCPToken{}),
+				MaxOutputBytes: NewDynamic(256 << 10),
+				ToolTimeout:    NewDynamic(time.Minute),
+				LogFiles:       []string{},
+			},
+		},
 		HTTP: HTTPConfig{
 			DomainName:        "",
 			ListenAddress:     "0.0.0.0:12310",
@@ -221,6 +229,9 @@ type CurioConfig struct {
 	// When enabled, SNARK proving tasks (PoRep C2, SnapDeals prove, and PSProve) are delegated
 	// to an external cuzk daemon over gRPC instead of using local GPU resources.
 	Cuzk CuzkConfig
+
+	// Aurora holds configuration for Aurora-specific subsystems.
+	Aurora AuroraConfig
 }
 
 type BatchFeeConfig struct {
@@ -1154,6 +1165,60 @@ type BulkRetrievalConfig struct {
 	// ResolveParallelism bounds concurrent per-block index lookups within
 	// one request scheduling batch. Must be positive. (Default: 64)
 	ResolveParallelism *Dynamic[int]
+}
+
+// AuroraConfig holds configuration for Aurora-specific subsystems.
+type AuroraConfig struct {
+	// MCP configures the read-only diagnostics MCP (Model Context Protocol)
+	// server served at /mcp on the GUI address.
+	MCP AuroraMCPConfig
+}
+
+// AuroraMCPConfig configures the read-only diagnostics MCP server. Agents
+// connect over streamable HTTP to http://<GuiAddress>/mcp and authenticate
+// with a bearer token. All tools are read-only; the cluster-internal node
+// diagnostics endpoint (/aurora/diag/v0 on the node RPC port) is
+// authenticated with the cluster storage RPC secret.
+type AuroraMCPConfig struct {
+	// Enable serves the MCP endpoint on this node's GUI address. Requires a
+	// restart to take effect. (Default: false)
+	Enable bool
+
+	// Tokens lists the agents allowed to use the MCP endpoint. Each agent
+	// sends "Authorization: Bearer <token>". Only the SHA-256 of the token is
+	// stored here, so the config (visible in the web UI) does not leak usable
+	// tokens. Generate one with:
+	//   tok=$(openssl rand -hex 32); echo "$tok"; echo -n "$tok" | sha256sum
+	// Updates apply to running nodes, so tokens can be added, rotated and
+	// disabled without a restart.
+	Tokens *Dynamic[[]AuroraMCPToken]
+
+	// MaxOutputBytes caps the size of a single tool result returned to the
+	// agent. Larger results are truncated. (Default: 262144)
+	MaxOutputBytes *Dynamic[int]
+
+	// ToolTimeout bounds the runtime of a single tool call. (Default: 1m)
+	ToolTimeout *Dynamic[time.Duration]
+
+	// LogFiles lists additional log files the log tools may read on this
+	// node, besides the file go-log writes to (GOLOG_FILE) and a file
+	// stdout/stderr is redirected to. Rotated siblings (<file>.N,
+	// <file>-<suffix>, optionally .gz) are discovered automatically. Set this
+	// in a node-specific layer when logs are written by an external
+	// redirect. Requires a restart to take effect.
+	LogFiles []string
+}
+
+// AuroraMCPToken is one agent allowed to use the MCP endpoint.
+type AuroraMCPToken struct {
+	// Name identifies the agent in the MCP tool-call log.
+	Name string
+
+	// TokenSHA256 is the hex-encoded SHA-256 of the bearer token.
+	TokenSHA256 string
+
+	// Disabled revokes the token without removing it.
+	Disabled bool
 }
 
 // CompressionConfig holds the compression levels for supported types

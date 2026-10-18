@@ -5,6 +5,7 @@ package webrpcporep
 import (
 	"github.com/gorilla/mux"
 
+	auroramcp "github.com/filecoin-project/curio/aurora/mcp"
 	"github.com/filecoin-project/curio/deps"
 	"github.com/filecoin-project/curio/web/api/webrpc"
 )
@@ -12,13 +13,15 @@ import (
 type curioHandler struct {
 	*webrpc.Handler
 	*PoRep
+	*auroramcp.AuroraRPC
 }
 
 // Routes registers shared WebRPC handlers plus Curio-only PoRep endpoints.
 func Routes(r *mux.Router, d *deps.Deps, debug bool) {
 	h := webrpc.NewHandler(d)
 	webrpc.MountRPC(r, &curioHandler{
-		Handler: h,
-		PoRep:   New(h),
+		Handler:   h,
+		PoRep:     New(h),
+		AuroraRPC: auroramcp.NewAuroraRPC(d),
 	}, debug)
 }

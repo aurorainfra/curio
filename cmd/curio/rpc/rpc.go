@@ -38,6 +38,7 @@ import (
 	"github.com/filecoin-project/curio/api"
 	"github.com/filecoin-project/curio/api/client"
 	ltypes "github.com/filecoin-project/curio/api/types"
+	"github.com/filecoin-project/curio/aurora/nodediag"
 	"github.com/filecoin-project/curio/build"
 	"github.com/filecoin-project/curio/deps"
 	"github.com/filecoin-project/curio/lib/metrics"
@@ -99,6 +100,7 @@ func CurioHandler(
 	mux.PathPrefix("/remote").HandlerFunc(remote)
 	mux.Handle("/debug/metrics", metrics.Exporter())
 	mux.Handle("/debug/service-discovery", prometheusSD)
+	mux.PathPrefix(nodediag.PathPrefix).Handler(nodediag.Handler(dependencies))
 	mux.PathPrefix("/").Handler(http.DefaultServeMux) // pprof
 
 	if !permissioned {
