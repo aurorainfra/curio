@@ -357,6 +357,7 @@ class CurioUX extends LitElement {
     const tools = [
       { href: '/pages/pdp/', label: 'PDP', icon: icon.pdp },
       { href: '/pages/sql/', label: 'SQL Console', icon: icon.sql },
+      { href: '/pages/aurora-mcp/', label: 'MCP', icon: icon.sql },
       ...(!this.isSkiff ? [
         { href: '/sector/', label: 'Sectors', icon: icon.sectors },
         { href: '/pages/pipeline_porep/', label: 'PoRep', icon: icon.porep },
