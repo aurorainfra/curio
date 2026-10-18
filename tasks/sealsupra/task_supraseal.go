@@ -59,7 +59,9 @@ type SupraSeal struct {
 	db      *harmonydb.DB
 	api     SupraSealNodeAPI
 	storage *paths.Remote
+	local   *paths.Local
 	sindex  paths.SectorIndex
+	machine string
 	sc      *ffi.SealCalls
 
 	pipelines int // 1 or 2
@@ -70,12 +72,18 @@ type SupraSeal struct {
 	outSDR *pipelinePhase // Phase 2
 
 	slots *slotmgr.SlotMgr
+
+	// scheduling diagnostics
+	schedLog     stateLogger // why schedule() did not create a batch
+	acceptLog    stateLogger // why CanAccept() refused
+	queueWatchLk sync.Mutex
+	queueWatchAt time.Time // last stale-queue warning
 }
 
 type P2Active func() bool
 
 func NewSupraSeal(sectorSize string, batchSize, pipelines int, dualHashers bool, nvmeDevices []string, trimLayers bool, machineHostAndPort string,
-	db *harmonydb.DB, api SupraSealNodeAPI, storage *paths.Remote, sindex paths.SectorIndex, sc *ffi.SealCalls) (*SupraSeal, *slotmgr.SlotMgr, P2Active, error) {
+	db *harmonydb.DB, api SupraSealNodeAPI, storage *paths.Remote, local *paths.Local, sindex paths.SectorIndex, sc *ffi.SealCalls) (*SupraSeal, *slotmgr.SlotMgr, P2Active, error) {
 
 	// Check CPU features before initializing supraseal
 	// supraseal's PC1 (sha_ext_mbx2) requires:
@@ -305,7 +313,9 @@ func NewSupraSeal(sectorSize string, batchSize, pipelines int, dualHashers bool,
 		db:      db,
 		api:     api,
 		storage: storage,
+		local:   local,
 		sindex:  sindex,
+		machine: machineHostAndPort,
 		sc:      sc,
 
 		spt:       spt,
@@ -611,6 +621,7 @@ func (s *SupraSeal) Do(ctx context.Context, taskID harmonytask.TaskID, stillOwne
 
 func (s *SupraSeal) CanAccept(ids []harmonytask.TaskID, _ *harmonytask.TaskEngine) ([]harmonytask.TaskID, error) {
 	if s.slots.Available() == 0 {
+		s.acceptLog.log("not accepting batch tasks: no free slot", "tasks", ids)
 		return []harmonytask.TaskID{}, nil
 	}
 
@@ -618,7 +629,17 @@ func (s *SupraSeal) CanAccept(ids []harmonytask.TaskID, _ *harmonytask.TaskEngin
 	// sysctl vm.nr_hugepages should be >= 36 for 32G sectors
 	if err := hugepageutil.CheckHugePages(36); err != nil {
 		log.Warnw("huge pages check failed, try 'sudo sysctl -w vm.nr_hugepages=36' and make sure your system uses 1G huge pages", "err", err)
+		s.acceptLog.log("not accepting batch tasks: huge pages", "tasks", ids)
 		return []harmonytask.TaskID{}, nil
+	}
+
+	// Storage is claimed by the task engine after CanAccept; log our estimate
+	// so a refusal there ("storage claim failed") can be correlated.
+	if need, avail, err := s.batchStorage(context.Background()); err == nil && avail < need {
+		s.acceptLog.log("batch tasks offered but sealing storage looks insufficient, storage claim will likely fail",
+			"tasks", ids, "need", types.SizeStr(types.NewInt(uint64(need))), "available", types.SizeStr(types.NewInt(uint64(avail))))
+	} else {
+		s.acceptLog.reset()
 	}
 
 	return ids, nil
@@ -640,7 +661,7 @@ func (s *SupraSeal) TypeDetails() harmonytask.TaskTypeDetails {
 
 	return harmonytask.TaskTypeDetails{
 		Max:       taskhelp.Max(s.pipelines),
-		Name:      fmt.Sprintf("Batch%d-%s", s.sectors, ssizeToName[must.One(s.spt.SectorSize())]),
+		Name:      s.taskName(),
 		MayFollow: []string{tasknames.AggregateDeals},
 		Cost: resources.Resources{
 			Cpu:     1,
@@ -662,17 +683,68 @@ type sectorClaim struct {
 	TaskIDSDR    sql.NullInt64 `db:"task_id_sdr"`
 }
 
+func (s *SupraSeal) taskName() string {
+	return fmt.Sprintf("Batch%d-%s", s.sectors, ssizeToName[must.One(s.spt.SectorSize())])
+}
+
+// schedule creates a new batch sealing task when this node could run one.
+//
+// It is called from IAmBored on every node with spare capacity, and the task
+// it creates is not bound to this node. Creating a batch this node cannot take
+// (e.g. its sealing storage is still held by sectors waiting for MoveStorage
+// while its slot is already free) used to repeat every 30s on every such node,
+// turning the whole CC scheduler target into queued batches. So a batch is only
+// created when no other batch task is waiting to be picked up and this node has
+// the sealing storage for it.
 func (s *SupraSeal) schedule(taskFunc harmonytask.AddTaskFunc) error {
-	if s.slots.Available() == 0 {
+	ctx := context.Background()
+	name := s.taskName()
+
+	queued, err := s.unownedBatchTasks(ctx)
+	if err != nil {
+		return xerrors.Errorf("listing unassigned batch tasks: %w", err)
+	}
+	s.watchQueuedBatches(ctx, queued)
+
+	freeSlots := s.slots.Available()
+	if freeSlots == 0 {
+		s.schedLog.log("not creating a batch: no free slot")
 		return nil
 	}
 
 	if err := hugepageutil.CheckHugePages(36); err != nil {
 		log.Warnw("huge pages check failed, try 'sudo sysctl -w vm.nr_hugepages=36' and make sure your system uses 1G huge pages", "err", err)
+		s.schedLog.log("not creating a batch: huge pages")
+		return nil
+	}
+
+	if len(queued) > 0 {
+		s.schedLog.log("not creating a batch: unassigned batch tasks already exist",
+			"queued", len(queued), "oldest_task", queued[0].ID, "oldest_added_by", queued[0].AddedBy, "free_slots", freeSlots)
+		return nil
+	}
+
+	need, avail, err := s.batchStorage(ctx)
+	if err != nil {
+		return xerrors.Errorf("estimating sealing storage: %w", err)
+	}
+	if avail < need {
+		s.schedLog.log("not creating a batch: not enough sealing storage on this node",
+			"need", types.SizeStr(types.NewInt(uint64(need))), "available", types.SizeStr(types.NewInt(uint64(avail))), "free_slots", freeSlots)
 		return nil
 	}
 
 	taskFunc(func(id harmonytask.TaskID, tx *harmonydb.Tx) (shouldCommit bool, seriousError error) {
+		// Another node may have created a batch since the check above.
+		var others int
+		if err := tx.QueryRow(`SELECT COUNT(*) FROM harmony_task WHERE name = $1 AND owner_id IS NULL AND id != $2`, name, id).Scan(&others); err != nil {
+			return false, xerrors.Errorf("checking for unassigned batch tasks: %w", err)
+		}
+		if others > 0 {
+			log.Infow("not creating a batch: another unassigned batch task appeared meanwhile", "unassigned", others, "machine", s.machine)
+			return false, nil
+		}
+
 		// claim [sectors] pipeline entries
 
 		var sectors []sectorClaim
@@ -685,6 +757,7 @@ func (s *SupraSeal) schedule(taskFunc harmonytask.AddTaskFunc) error {
 
 		log.Infow("got sectors, maybe schedule", "sectors", len(sectors), "s.sectors", s.sectors)
 
+		fromPipeline := len(sectors)
 		if len(sectors) != s.sectors {
 			// not enough sectors to fill a batch, use CC scheduler
 			log.Infow("not enough sectors to fill a batch, using CC scheduler", "sectors", len(sectors))
@@ -716,10 +789,145 @@ func (s *SupraSeal) schedule(taskFunc harmonytask.AddTaskFunc) error {
 			}
 		}
 
+		log.Infow("created batch sealing task", "task", id, "sectors", len(sectors), "from_pipeline", fromPipeline,
+			"from_cc_scheduler", len(sectors)-fromPipeline, "machine", s.machine, "free_slots", freeSlots,
+			"storage_need", types.SizeStr(types.NewInt(uint64(need))), "storage_available", types.SizeStr(types.NewInt(uint64(avail))))
+		s.schedLog.reset()
 		return true, nil
 	})
 
 	return nil
+}
+
+type queuedBatchTask struct {
+	ID         int64     `db:"id"`
+	PostedTime time.Time `db:"posted_time"`
+	Retries    int       `db:"retries"`
+	AddedBy    string    `db:"added_by"`
+}
+
+// unownedBatchTasks lists batch tasks of this type waiting to be picked up by
+// any node, oldest first.
+func (s *SupraSeal) unownedBatchTasks(ctx context.Context) ([]queuedBatchTask, error) {
+	var out []queuedBatchTask
+	err := s.db.Select(ctx, &out, `SELECT t.id, t.posted_time, t.retries, COALESCE(m.host_and_port, '') AS added_by
+		FROM harmony_task t
+		LEFT JOIN harmony_machines m ON m.id = t.added_by
+		WHERE t.name = $1 AND t.owner_id IS NULL
+		ORDER BY t.posted_time`, s.taskName())
+	return out, err
+}
+
+const (
+	// queuedBatchWarnAge is how long a batch task may wait unassigned before
+	// it is reported; a healthy cluster picks a new batch up within seconds.
+	queuedBatchWarnAge = 15 * time.Minute
+	queuedBatchWarnInt = 10 * time.Minute
+)
+
+// watchQueuedBatches warns about batch tasks no node has picked up for a long
+// time, whatever created them. Their sectors count as buffered SDR and so put
+// the market under backpressure (Ingest.MaxQueueSDR).
+func (s *SupraSeal) watchQueuedBatches(ctx context.Context, queued []queuedBatchTask) {
+	if len(queued) == 0 || time.Since(queued[0].PostedTime) < queuedBatchWarnAge {
+		return
+	}
+
+	s.queueWatchLk.Lock()
+	if time.Since(s.queueWatchAt) < queuedBatchWarnInt {
+		s.queueWatchLk.Unlock()
+		return
+	}
+	s.queueWatchAt = time.Now()
+	s.queueWatchLk.Unlock()
+
+	addedBy := map[string]int{}
+	ids := make([]int64, 0, len(queued))
+	for _, q := range queued {
+		addedBy[q.AddedBy]++
+		ids = append(ids, q.ID)
+	}
+
+	kv := []any{"queued", len(queued), "sectors", len(queued) * s.sectors, "oldest_age", time.Since(queued[0].PostedTime).Truncate(time.Second),
+		"added_by", addedBy, "tasks", ids, "this_machine", s.machine, "free_slots_here", s.slots.Available()}
+	if need, avail, err := s.batchStorage(ctx); err == nil {
+		kv = append(kv, "storage_need_here", types.SizeStr(types.NewInt(uint64(need))), "storage_available_here", types.SizeStr(types.NewInt(uint64(avail))))
+	}
+	log.Warnw("batch sealing tasks have been waiting unassigned for a long time; nodes with free slots are not taking them (check \"did not accept task\" logs)", kv...)
+}
+
+// batchStorage estimates whether this node's sealing paths can hold the cache
+// and sealed files of a whole batch. It mirrors the task's storage cost
+// (TaskTypeDetails.Cost.Storage) summed over the batch, against the space
+// still available on local sealing paths after existing reservations. The
+// actual reservation at task start remains authoritative.
+func (s *SupraSeal) batchStorage(ctx context.Context) (need, available int64, err error) {
+	ssize, err := s.spt.SectorSize()
+	if err != nil {
+		return 0, 0, err
+	}
+	perSector, err := SupraSpaceUse(storiface.FTCache|storiface.FTSealed, ssize)
+	if err != nil {
+		return 0, 0, err
+	}
+	need = int64(perSector) * int64(s.sectors)
+
+	localPaths, err := s.local.Local(ctx)
+	if err != nil {
+		return 0, 0, xerrors.Errorf("listing local storage: %w", err)
+	}
+
+	for _, lp := range localPaths {
+		if !lp.CanSeal {
+			continue
+		}
+		si, err := s.sindex.StorageInfo(ctx, lp.ID)
+		if err != nil {
+			return 0, 0, xerrors.Errorf("storage info for %s: %w", lp.ID, err)
+		}
+		if !storiface.FTCache.Allowed(si.AllowTypes, si.DenyTypes) && !storiface.FTSealed.Allowed(si.AllowTypes, si.DenyTypes) {
+			continue
+		}
+		st, err := s.local.FsStat(ctx, lp.ID)
+		if err != nil {
+			return 0, 0, xerrors.Errorf("fs stat for %s: %w", lp.ID, err)
+		}
+		usable := st.Available - int64(paths.MinFreeStoragePercentage/100*float64(paths.MaxCapacity(st)))
+		if usable > 0 {
+			available += usable
+		}
+	}
+
+	return need, available, nil
+}
+
+// stateLogger logs a scheduling decision when it changes, and repeats an
+// unchanged one at most every stateLogRepeat, so per-30s decisions stay
+// visible without flooding the log.
+type stateLogger struct {
+	lk   sync.Mutex
+	last string
+	at   time.Time
+}
+
+const stateLogRepeat = 10 * time.Minute
+
+func (l *stateLogger) log(msg string, kv ...any) {
+	l.lk.Lock()
+	if msg == l.last && time.Since(l.at) < stateLogRepeat {
+		l.lk.Unlock()
+		return
+	}
+	l.last, l.at = msg, time.Now()
+	l.lk.Unlock()
+
+	log.Infow(msg, kv...)
+}
+
+func (l *stateLogger) reset() {
+	l.lk.Lock()
+	l.last = ""
+	l.lk.Unlock()
 }
 
 func (s *SupraSeal) claimsFromCCScheduler(tx *harmonydb.Tx, toSeal int64) ([]sectorClaim, error) {

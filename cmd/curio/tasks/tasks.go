@@ -244,7 +244,7 @@ func StartTasks(ctx context.Context, dependencies *deps.Deps, shutdownChan chan 
 	var sealMoveStorage *seal.MoveStorageTask
 	var snapMoveStorage *snap.MoveStorageTask
 	if hasAnySealingTask {
-		sealingTasks, p2a, sp, spp, ss, sds, sms, err := addSealingTasks(ctx, hasAnySealingTask, db, full, sender, as, cfg, slrLazy, asyncParams, si, stor, bstore, machine, prover, cuzkClient)
+		sealingTasks, p2a, sp, spp, ss, sds, sms, err := addSealingTasks(ctx, hasAnySealingTask, db, full, sender, as, cfg, slrLazy, asyncParams, si, stor, lstor, bstore, machine, prover, cuzkClient)
 		if err != nil {
 			return nil, err
 		}
@@ -555,7 +555,7 @@ func StartTasks(ctx context.Context, dependencies *deps.Deps, shutdownChan chan 
 func addSealingTasks(
 	ctx context.Context, hasAnySealingTask bool, db *harmonydb.DB, full api.Chain, sender *message.Sender,
 	as *multictladdr.MultiAddressSelector, cfg *config.CurioConfig, slrLazy *lazy.Lazy[*ffi.SealCalls],
-	asyncParams func() func() (bool, error), si paths.SectorIndex, stor *paths.Remote,
+	asyncParams func() func() (bool, error), si paths.SectorIndex, stor *paths.Remote, lstor *paths.Local,
 	bstore curiochain.CurioBlockstore, machineHostPort string, prover storiface.Prover,
 	cuzkClient *cuzk.Client) ([]harmonytask.TaskInterface, sealsupra.P2Active, *seal.SealPoller, *piece2.ParkPieceTask, *snap.SubmitTask, *seal.MoveStorageTask, *snap.MoveStorageTask, error) {
 	var activeTasks []harmonytask.TaskInterface
@@ -600,7 +600,7 @@ func addSealingTasks(
 			!cfg.Seal.SingleHasherPerThread,
 			cfg.Seal.LayerNVMEDevices,
 			!cfg.Seal.LayerNVMEDisableTrim,
-			machineHostPort, db, full, stor, si, slr)
+			machineHostPort, db, full, stor, lstor, si, slr)
 		if err != nil {
 			return nil, nil, sp, nil, nil, nil, nil, xerrors.Errorf("setting up batch sealer: %w", err)
 		}
