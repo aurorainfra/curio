@@ -374,6 +374,7 @@ COMMANDS:
    remove, rm, del, delete          Remove a named config layer.
    edit                             edit a config layer
    new-cluster                      Create new configuration for a new cluster
+   manage-users                     Manage web UI users (Aurora.WebUI.Users) in a config layer, interactively or with flags
    help, h                          Shows a list of commands or help for one command
 
 OPTIONS:
@@ -482,6 +483,25 @@ USAGE:
 
 OPTIONS:
    --help, -h  show help
+```
+
+### curio config manage-users
+```
+NAME:
+   curio config manage-users - Manage web UI users (Aurora.WebUI.Users) in a config layer, interactively or with flags
+
+USAGE:
+   curio config manage-users [command options] [layer name, default: base]
+
+OPTIONS:
+   --list            list the layer's users and exit (default: false)
+   --add value       add a user (prompts for the password)
+   --passwd value    set a new password for a user
+   --disable value   disable a user
+   --enable value    enable a disabled user
+   --remove value    remove a user
+   --password-stdin  read the password from the first line of stdin instead of prompting (default: false)
+   --help, -h        show help
 ```
 
 ## curio test

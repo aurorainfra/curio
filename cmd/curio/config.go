@@ -32,6 +32,7 @@ var configCmd = &cli.Command{
 		configRmCmd,
 		configEditCmd,
 		configNewCmd,
+		configManageUsersCmd,
 	},
 }
 

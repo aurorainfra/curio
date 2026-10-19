@@ -15,30 +15,36 @@ Only two things are exempt:
 
 ## Setup
 
-1. Hash a password. Either:
+Use `curio config manage-users [layer]` (default layer: `base`). It talks to the database directly, so it works while the UI is locked:
 
-   ```sh
-   htpasswd -nbBC 12 "" 'a long password' | cut -d: -f2
-   ```
+```sh
+curio config manage-users                    # interactive: add, change password, disable, enable, remove
+curio config manage-users --add ops          # prompts for the password twice
+curio config manage-users --passwd ops
+curio config manage-users --disable ops      # or --enable / --remove
+curio config manage-users --list
+echo "$PW" | curio config manage-users --add ci --password-stdin
+```
 
-   or:
+The command:
+- changes only the `[[Aurora.WebUI.Users]]` entries of the layer and keeps the rest of its text as it was;
+- saves the previous version to the layer history, and refuses to write if the layer changed meanwhile;
+- hashes passwords with bcrypt (cost 12, at least 12 characters).
 
-   ```sh
-   go run ./aurora/webauth/cmd/hashpw     # reads the password from stdin
-   ```
+Users in a layer replace the users of the layers below it on nodes running that layer.
 
-2. Add the user to a layer the GUI node runs with, for example base, with `curio config edit base`:
+To edit by hand instead, hash a password with `htpasswd -nbBC 12 "" 'a long password' | cut -d: -f2` or `go run ./aurora/webauth/cmd/hashpw`, then add it to a layer:
 
-   ```toml
-   [Aurora.WebUI]
-     SessionTTL = "12h0m0s"
+```toml
+[Aurora.WebUI]
+  SessionTTL = "12h0m0s"
 
-     [[Aurora.WebUI.Users]]
-       Name = "ops"
-       PasswordBcrypt = "$2a$12$..."
-   ```
+[[Aurora.WebUI.Users]]
+  Name = "ops"
+  PasswordBcrypt = "$2a$12$..."
+```
 
-Users can be added, re-passworded or disabled (`Disabled = true`) without a restart. Changing a user's password or disabling them ends their sessions.
+Users can be added, re-passworded or disabled without a restart. Changing a user's password or disabling them ends their sessions.
 
 ## How it works
 

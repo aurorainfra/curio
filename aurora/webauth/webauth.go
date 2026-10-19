@@ -102,7 +102,7 @@ func New(cfg *config.CurioConfig) *Auth {
 		warned:      map[string]bool{},
 	}
 	if len(a.enabledUsers()) == 0 {
-		log.Errorw("no web UI users configured: every request to the web UI will be refused; add users to Aurora.WebUI.Users (e.g. with 'curio config edit base')")
+		log.Errorw("no web UI users configured: every request to the web UI will be refused; add users with 'curio config manage-users'")
 	}
 	return a
 }

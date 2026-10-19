@@ -1192,9 +1192,9 @@ type AuroraConfig struct {
 type AuroraWebUIConfig struct {
 	// Users allowed to use the web UI. Browsers log in with HTTP Basic auth
 	// and then use a session cookie. Only bcrypt hashes of passwords are
-	// stored; generate one with:
+	// stored. Manage users with 'curio config manage-users [layer]', or
+	// generate a hash with:
 	//   htpasswd -nbBC 12 "" 'password' | cut -d: -f2
-	// or: go run ./aurora/webauth/cmd/hashpw
 	// Updates apply to running nodes; disabling a user or changing their
 	// password ends their sessions.
 	Users *Dynamic[[]AuroraWebUser]
