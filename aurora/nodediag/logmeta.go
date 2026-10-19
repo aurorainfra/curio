@@ -72,23 +72,30 @@ func parseMeta(line []byte) lineMeta {
 	return parseTextMeta(line)
 }
 
-func jsonField(head []byte, key string) ([]byte, bool) {
+// jsonField returns the raw value of a top-level-looking "key": in a JSON
+// line: the contents of a string value (escapes left as-is), or the literal
+// text of a number/bool/null. It is a byte search, not a parser: it is meant
+// for flat zap log lines.
+func jsonField(line []byte, key string) ([]byte, bool) {
 	k := []byte(`"` + key + `":`)
-	i := bytes.Index(head, k)
+	i := bytes.Index(line, k)
 	if i < 0 {
 		return nil, false
 	}
-	v := head[i+len(k):]
-	v = bytes.TrimLeft(v, " ")
+	v := bytes.TrimLeft(line[i+len(k):], " ")
 	if len(v) == 0 {
 		return nil, false
 	}
 	if v[0] == '"' {
-		end := bytes.IndexByte(v[1:], '"')
-		if end < 0 {
-			return nil, false
+		for j := 1; j < len(v); j++ {
+			switch v[j] {
+			case '\\':
+				j++
+			case '"':
+				return v[1:j], true
+			}
 		}
-		return v[1 : 1+end], true
+		return nil, false
 	}
 	end := bytes.IndexAny(v, ",}")
 	if end < 0 {

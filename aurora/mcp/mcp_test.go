@@ -129,6 +129,9 @@ func TestMCPEndToEnd(t *testing.T) {
 		"cluster_machines", "alerts", "tasks_active", "tasks_stuck", "task_history", "task_detail", "task_timing_stats",
 		"wdpost_deadlines", "wdpost_partition", "storage_paths", "sector_locate", "storage_path_sectors", "missing_refs",
 		"storage_diag", "log_files", "log_read", "log_grep", "log_tail", "log_find_time", "goroutines",
+		"log_query", "log_job", "log_job_lines", "log_job_cancel", "log_jobs",
+		"storage_overview", "storage_disks", "storage_disk_detail", "storage_sas", "partition_sectors", "path_partitions",
+		"market_backpressure", "market_decisions", "market_pipeline", "node_metrics", "config_effective",
 	} {
 		require.Contains(t, names, want)
 	}
@@ -170,6 +173,7 @@ func TestQueryCatalogReadOnly(t *testing.T) {
 		"lateral": true, "unnest": true, "over": true, "as": true, "using": true, "select": true, "from": true,
 		"where": true, "and": true, "or": true, "not": true, "when": true, "then": true, "else": true, "on": true,
 		"join": true, "values": true, "by": true, "group": true, "within": true, "distinct": true,
+		"date_trunc": true, "strpos": true, "lower": true,
 	}
 
 	n := 0

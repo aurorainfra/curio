@@ -36,8 +36,11 @@ const serverInstructions = `Read-only diagnostics for a Curio Filecoin storage p
 Typical flows:
 - Failed/stuck tasks: tasks_active, tasks_stuck, task_history (failed_only), task_detail, then log_grep around the task's work window on the machine that ran it, and goroutines (live pprof goroutine dump, not logs) on that machine for hangs.
 - WindowPoSt: wdpost_deadlines for an overview, wdpost_partition for skipped/faulty sectors grouped by storage path, then storage_paths / storage_diag / sector_locate for the affected paths.
-- Missing storage: storage_paths (stale heartbeats, dead URLs), missing_refs, storage_path_sectors.
-- Logs are per machine and can be very large: use log_files for sizes, log_find_time to turn a time into a byte offset, then log_grep / log_read on byte ranges. Resume a stopped grep from ScannedUntil.
+- Missing storage: storage_paths (stale heartbeats, dead URLs), missing_refs, storage_path_sectors, path_partitions (blast radius), partition_sectors (which paths hold a partition).
+- Storage hardware: storage_overview (per machine, problems_only), storage_disks (SMART verdicts, filter/page), storage_disk_detail, storage_sas (HBA/expander/phy errors, JBOD slots).
+- Deals rejected / "busy": market_backpressure (counters vs limits and cached verdicts per market node), market_decisions (history with reasons and CIDGravity responses), market_pipeline, config_effective (Ingest limits per node), tasks_stuck for the queued tasks behind the counters.
+- Logs are per machine and can be hundreds of GB: log_query scans them as background jobs (parallel, filter stages, time windows, group/count aggregation such as group_by template to find what spams) and keeps matches on the node; refine with log_query job=<id>, page with log_job_lines, read context with log_read. log_grep is a quick synchronous first-matches search.
+- Metrics: node_metrics (Prometheus, by prefix).
 Machines are selected by ID, name or host:port (see cluster_machines); some tools accept "all".`
 
 // Server is the MCP server.
@@ -88,6 +91,9 @@ func newServer(d *deps.Deps) (*Server, error) {
 	s.registerTaskTools()
 	s.registerWdPostTools()
 	s.registerStorageTools()
+	s.registerStorageTools2()
+	s.registerMarketTools()
+	s.registerNodeTools()
 	s.registerLogTools()
 	s.registerDebugTools()
 

@@ -27,8 +27,8 @@ const (
 	defaultGrepMatches = 200
 	maxGrepMatches     = 2000
 	maxGrepContext     = 10
-	defaultScanBytes   = 2 << 30
-	maxScanBytes       = 20 << 30
+	defaultScanBytes   = 8 << 30
+	maxScanBytes       = 1 << 40
 	maxPatternLen      = 512
 
 	defaultTailLines = 100
@@ -807,49 +807,7 @@ func (lf *logFiles) findTime(ctx context.Context, req FindTimeRequest) (*FindTim
 	}
 	size := st.Size()
 
-	// firstTS returns the first line at or after pos that has a timestamp.
-	firstTS := func(pos, limit int64) (int64, time.Time, []byte, bool, error) {
-		from := max(pos-1, 0)
-		lr := newLineReader(io.NewSectionReader(f, from, size-from), from)
-		if err := lr.skipPartial(pos); err != nil {
-			if errors.Is(err, io.EOF) {
-				return 0, time.Time{}, nil, false, nil
-			}
-			return 0, time.Time{}, nil, false, err
-		}
-		for lr.off-pos < limit {
-			line, off, err := lr.next()
-			if err != nil {
-				if errors.Is(err, io.EOF) {
-					return 0, time.Time{}, nil, false, nil
-				}
-				return 0, time.Time{}, nil, false, err
-			}
-			if ts, ok := parseMeta(line).time(); ok {
-				return off, ts, line, true, nil
-			}
-		}
-		return 0, time.Time{}, nil, false, nil
-	}
-
-	lo, hi := int64(0), size
-	for hi-lo > findTimeWindow {
-		if err := ctx.Err(); err != nil {
-			return nil, err
-		}
-		mid := lo + (hi-lo)/2
-		off, ts, _, ok, err := firstTS(mid, findTimeProbe)
-		if err != nil {
-			return nil, err
-		}
-		if !ok || off >= hi || !ts.Before(req.Time) {
-			hi = mid
-			continue
-		}
-		lo = off + 1
-	}
-
-	off, ts, line, ok, err := firstTSAtOrAfter(ctx, f, size, lo, req.Time)
+	off, ts, line, ok, err := bisectTime(ctx, f, size, req.Time)
 	if err != nil {
 		return nil, err
 	}
@@ -860,6 +818,55 @@ func (lf *logFiles) findTime(ctx context.Context, req FindTimeRequest) (*FindTim
 		resp.Line = truncLine(line, maxContextLineOut)
 	}
 	return resp, nil
+}
+
+// firstTS returns the first line at or after pos that has a timestamp,
+// reading at most limit bytes.
+func firstTS(f io.ReaderAt, size, pos, limit int64) (int64, time.Time, []byte, bool, error) {
+	from := max(pos-1, 0)
+	lr := newLineReader(io.NewSectionReader(f, from, size-from), from)
+	if err := lr.skipPartial(pos); err != nil {
+		if errors.Is(err, io.EOF) {
+			return 0, time.Time{}, nil, false, nil
+		}
+		return 0, time.Time{}, nil, false, err
+	}
+	for lr.off-pos < limit {
+		line, off, err := lr.next()
+		if err != nil {
+			if errors.Is(err, io.EOF) {
+				return 0, time.Time{}, nil, false, nil
+			}
+			return 0, time.Time{}, nil, false, err
+		}
+		if ts, ok := parseMeta(line).time(); ok {
+			return off, ts, append([]byte(nil), line...), true, nil
+		}
+	}
+	return 0, time.Time{}, nil, false, nil
+}
+
+// bisectTime returns the offset of the first line with a timestamp at or
+// after t, by bisecting on line timestamps. ok is false when every line is
+// older than t.
+func bisectTime(ctx context.Context, f *os.File, size int64, t time.Time) (int64, time.Time, []byte, bool, error) {
+	lo, hi := int64(0), size
+	for hi-lo > findTimeWindow {
+		if err := ctx.Err(); err != nil {
+			return 0, time.Time{}, nil, false, err
+		}
+		mid := lo + (hi-lo)/2
+		off, ts, _, ok, err := firstTS(f, size, mid, findTimeProbe)
+		if err != nil {
+			return 0, time.Time{}, nil, false, err
+		}
+		if !ok || off >= hi || !ts.Before(t) {
+			hi = mid
+			continue
+		}
+		lo = off + 1
+	}
+	return firstTSAtOrAfter(ctx, f, size, lo, t)
 }
 
 func firstTSAtOrAfter(ctx context.Context, f *os.File, size, pos int64, t time.Time) (int64, time.Time, []byte, bool, error) {

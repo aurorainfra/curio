@@ -355,3 +355,131 @@ const qMCPAgentActivity = `
 SELECT agent, max(ts) AS last_call, count(*) FILTER (WHERE ts >= $1) AS calls_24h
 FROM aurora_mcp_calls
 GROUP BY agent`
+
+// ---- market ----
+
+const qMarketDecisions = `
+SELECT id, ts, machine, market, deal_uuid, sp_id, COALESCE(client, '') AS client,
+       COALESCE(piece_cid, '') AS piece_cid, COALESCE(piece_size, 0) AS piece_size,
+       COALESCE(verified, FALSE) AS verified, COALESCE(offline, FALSE) AS offline,
+       accepted, COALESCE(reason, '') AS reason, COALESCE(error, '') AS error,
+       bp_mk12, bp_sector, COALESCE(cidgravity::text, '') AS cidgravity, COALESCE(duration_ms, 0) AS duration_ms
+FROM aurora_market_decisions
+WHERE ts >= $1 AND ts <= $2
+  AND ($3::bigint < 0 OR sp_id = $3::bigint)
+  AND ($4::text = '' OR client = $4::text)
+  AND ($5::text = 'all' OR ($5::text = 'accepted') = accepted)
+  AND ($6::text = '' OR strpos(lower(COALESCE(reason, '') || ' ' || COALESCE(cidgravity::text, '')), lower($6::text)) > 0)
+ORDER BY ts DESC
+LIMIT $7`
+
+const qMarketDecisionReasons = `
+SELECT accepted, left(COALESCE(NULLIF(reason, ''), error, ''), 200) AS reason,
+       count(*) AS n, min(ts) AS first_ts, max(ts) AS last_ts,
+       count(*) FILTER (WHERE bp_mk12) AS bp_mk12, count(*) FILTER (WHERE bp_sector) AS bp_sector
+FROM aurora_market_decisions
+WHERE ts >= $1 AND ts <= $2 AND ($3::bigint < 0 OR sp_id = $3::bigint)
+GROUP BY 1, 2
+ORDER BY n DESC
+LIMIT 100`
+
+const qMarketDecisionHourly = `
+SELECT date_trunc('hour', ts) AS hour,
+       count(*) FILTER (WHERE accepted) AS accepted,
+       count(*) FILTER (WHERE NOT accepted) AS rejected,
+       count(*) FILTER (WHERE bp_mk12 OR bp_sector) AS under_backpressure
+FROM aurora_market_decisions
+WHERE ts >= $1 AND ts <= $2 AND ($3::bigint < 0 OR sp_id = $3::bigint)
+GROUP BY 1
+ORDER BY 1`
+
+const qMK12PipelineStages = `
+SELECT count(*) AS active,
+       count(*) FILTER (WHERE NOT started) AS not_started,
+       count(*) FILTER (WHERE started AND NOT after_commp) AS before_commp,
+       count(*) FILTER (WHERE after_commp AND NOT after_psd) AS before_publish,
+       count(*) FILTER (WHERE after_psd AND NOT after_find_deal) AS before_find_deal,
+       count(*) FILTER (WHERE after_find_deal AND sector IS NULL) AS waiting_for_sector,
+       count(*) FILTER (WHERE sector IS NOT NULL AND NOT sealed) AS sealing,
+       count(*) FILTER (WHERE sealed AND should_index AND NOT indexed) AS indexing,
+       count(*) FILTER (WHERE offline) AS offline,
+       min(created_at) AS oldest
+FROM market_mk12_deal_pipeline
+WHERE NOT complete`
+
+const qMK12PipelineOldest = `
+SELECT uuid, sp_id, created_at, offline, COALESCE(started, FALSE) AS started,
+       COALESCE(after_commp, FALSE) AS after_commp, COALESCE(after_psd, FALSE) AS after_psd,
+       COALESCE(after_find_deal, FALSE) AS after_find_deal, sector, COALESCE(sealed, FALSE) AS sealed,
+       COALESCE(indexed, FALSE) AS indexed, commp_task_id, psd_task_id, find_deal_task_id, indexing_task_id
+FROM market_mk12_deal_pipeline
+WHERE NOT complete
+ORDER BY created_at
+LIMIT $1`
+
+const qMK20PipelineStages = `
+SELECT count(*) AS active,
+       count(*) FILTER (WHERE NOT downloaded) AS downloading,
+       count(*) FILTER (WHERE downloaded AND NOT after_commp) AS before_commp,
+       count(*) FILTER (WHERE after_commp AND NOT aggregated) AS before_aggregation,
+       count(*) FILTER (WHERE aggregated AND sector IS NULL) AS waiting_for_sector,
+       count(*) FILTER (WHERE sector IS NOT NULL AND NOT sealed) AS sealing,
+       count(*) FILTER (WHERE sealed AND indexing AND NOT indexed) AS indexing,
+       min(created_at) AS oldest
+FROM market_mk20_pipeline
+WHERE NOT complete`
+
+const qParkedPieces = `
+SELECT count(*) AS incomplete,
+       count(*) FILTER (WHERE pp.task_id IS NULL) AS no_task,
+       count(*) FILTER (WHERE pp.task_id IS NOT NULL AND t.owner_id IS NULL) AS queued,
+       count(*) FILTER (WHERE t.owner_id IS NOT NULL) AS running,
+       min(pp.created_at) AS oldest
+FROM parked_pieces pp
+LEFT JOIN harmony_task t ON t.id = pp.task_id
+WHERE NOT pp.complete`
+
+const qOpenDealSectors = `
+SELECT sp_id, sector_number, is_snap, count(*) AS pieces, sum(piece_size) AS piece_bytes, min(created_at) AS oldest_piece
+FROM open_sector_pieces
+GROUP BY sp_id, sector_number, is_snap
+ORDER BY min(created_at)
+LIMIT $1`
+
+const qFailedMK12Deals = `
+SELECT left(error, 200) AS error, count(*) AS n, max(created_at) AS last, min(uuid) AS sample_uuid
+FROM market_mk12_deals
+WHERE error IS NOT NULL AND error <> '' AND created_at >= $1
+GROUP BY 1
+ORDER BY n DESC
+LIMIT 50`
+
+// ---- partitions and paths ----
+
+const qMetaPartitionSectors = `
+SELECT sector_num, partition, is_faulty
+FROM sectors_meta
+WHERE sp_id = $1 AND deadline = $2 AND ($3::bigint < 0 OR partition = $3::bigint) AND is_live
+ORDER BY partition, sector_num`
+
+// per deadline/partition, the live sectors with files on a storage path, and
+// how many have no sealed/update copy on any other path
+const qPathPartitions = `
+WITH s AS (
+    SELECT DISTINCT sl.miner_id, sl.sector_num
+    FROM sector_location sl
+    WHERE sl.storage_id = $1 AND sl.sector_filetype IN (2, 4, 8, 16)
+)
+SELECT s.miner_id AS sp_id, m.deadline, m.partition,
+       count(*) AS sectors,
+       count(*) FILTER (WHERE m.is_faulty) AS faulty,
+       count(*) FILTER (WHERE m.sp_id IS NULL) AS not_in_meta,
+       count(*) FILTER (WHERE NOT EXISTS (
+           SELECT 1 FROM sector_location o
+           WHERE o.miner_id = s.miner_id AND o.sector_num = s.sector_num
+             AND o.sector_filetype IN (2, 8) AND o.storage_id <> $1)) AS no_other_sealed_copy
+FROM s
+LEFT JOIN sectors_meta m ON m.sp_id = s.miner_id AND m.sector_num = s.sector_num
+WHERE m.sp_id IS NULL OR m.is_live
+GROUP BY 1, 2, 3
+ORDER BY 1, 2, 3`

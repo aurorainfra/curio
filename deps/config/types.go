@@ -138,10 +138,13 @@ func DefaultCurioConfig() *CurioConfig {
 		},
 		Aurora: AuroraConfig{
 			MCP: AuroraMCPConfig{
-				Tokens:         NewDynamic([]AuroraMCPToken{}),
-				MaxOutputBytes: NewDynamic(256 << 10),
-				ToolTimeout:    NewDynamic(time.Minute),
-				LogFiles:       []string{},
+				Tokens:           NewDynamic([]AuroraMCPToken{}),
+				MaxOutputBytes:   NewDynamic(256 << 10),
+				ToolTimeout:      NewDynamic(time.Minute),
+				LogFiles:         []string{},
+				MaxScratchBytes:  NewDynamic(int64(4 << 30)),
+				LogScanWorkers:   NewDynamic(0),
+				MaxLogJobRuntime: NewDynamic(time.Hour),
 			},
 		},
 		HTTP: HTTPConfig{
@@ -1207,6 +1210,26 @@ type AuroraMCPConfig struct {
 	// in a node-specific layer when logs are written by an external
 	// redirect. Requires a restart to take effect.
 	LogFiles []string
+
+	// ScratchDir is where log query jobs keep their matched lines so agents
+	// can page through them and chain further filters without rescanning.
+	// Empty uses the system temp directory. The directory's contents are
+	// owned by curio and removed at startup. Requires a restart to take
+	// effect.
+	ScratchDir string
+
+	// MaxScratchBytes caps the total size of matched lines kept for log query
+	// jobs on this node; also never uses more than half of the scratch
+	// filesystem's free space. (Default: 4 GiB)
+	MaxScratchBytes *Dynamic[int64]
+
+	// LogScanWorkers is the number of parallel workers log query jobs on this
+	// node may use for scanning; 0 uses a quarter of the CPUs (at least 2).
+	LogScanWorkers *Dynamic[int]
+
+	// MaxLogJobRuntime bounds how long a single log query job may run.
+	// (Default: 1h)
+	MaxLogJobRuntime *Dynamic[time.Duration]
 }
 
 // AuroraMCPToken is one agent allowed to use the MCP endpoint.

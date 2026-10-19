@@ -43,13 +43,24 @@ const maxRequestBytes = 64 << 10
 
 // Endpoint names, relative to PathPrefix.
 const (
-	OpLogFiles   = "log/files"
-	OpLogRead    = "log/read"
-	OpLogGrep    = "log/grep"
-	OpLogTail    = "log/tail"
-	OpLogFind    = "log/findtime"
-	OpGoroutines = "goroutines"
-	OpStorage    = "storage"
+	OpLogFiles     = "log/files"
+	OpLogRead      = "log/read"
+	OpLogGrep      = "log/grep"
+	OpLogTail      = "log/tail"
+	OpLogFind      = "log/findtime"
+	OpLogQuery     = "log/query"
+	OpLogJob       = "log/job"
+	OpLogJobLines  = "log/job/lines"
+	OpLogJobCancel = "log/job/cancel"
+	OpLogJobs      = "log/jobs"
+	OpGoroutines   = "goroutines"
+	OpStorage      = "storage"
+	OpStoragePaths = "storage/paths"
+	OpDisks        = "storage/disks"
+	OpDisk         = "storage/disk"
+	OpSAS          = "storage/sas"
+	OpBackpressure = "market/backpressure"
+	OpConfig       = "config"
 )
 
 // ErrorResponse is returned with a non-200 status.
@@ -65,14 +76,18 @@ func (e errBadRequest) Error() string { return e.msg }
 func badRequest(msg string) error { return errBadRequest{msg: msg} }
 
 type handler struct {
-	d    *deps.Deps
-	logs *logFiles
+	d     *deps.Deps
+	logs  *logFiles
+	jobs  *jobRegistry
+	smart *smartCache
+	sas   *sasState
 }
 
 // Handler returns the diag HTTP handler. Every request must carry a JWT
 // granting PermDiag; requests without one are rejected.
 func Handler(d *deps.Deps) http.Handler {
-	h := &handler{d: d, logs: newLogFiles(d)}
+	lf := newLogFiles(d)
+	h := &handler{d: d, logs: lf, jobs: newJobRegistry(d, lf), smart: newSmartCache(), sas: &sasState{}}
 	return http.HandlerFunc(h.serve)
 }
 
@@ -108,10 +123,32 @@ func (h *handler) serve(w http.ResponseWriter, r *http.Request) {
 		resp, err = handle(ctx, body, h.logs.tail)
 	case OpLogFind:
 		resp, err = handle(ctx, body, h.logs.findTime)
+	case OpLogQuery:
+		resp, err = handle(ctx, body, h.jobs.start)
+	case OpLogJob:
+		resp, err = handle(ctx, body, h.jobs.status)
+	case OpLogJobLines:
+		resp, err = handle(ctx, body, h.jobs.lines)
+	case OpLogJobCancel:
+		resp, err = handle(ctx, body, h.jobs.cancelJob)
+	case OpLogJobs:
+		resp, err = handle(ctx, body, h.jobs.list)
 	case OpGoroutines:
 		resp, err = handle(ctx, body, goroutines)
 	case OpStorage:
 		resp, err = handle(ctx, body, h.storageDiag)
+	case OpStoragePaths:
+		resp, err = handle(ctx, body, h.storagePaths)
+	case OpDisks:
+		resp, err = handle(ctx, body, h.disks)
+	case OpDisk:
+		resp, err = handle(ctx, body, h.diskDetail)
+	case OpSAS:
+		resp, err = handle(ctx, body, h.sas.report)
+	case OpBackpressure:
+		resp, err = handle(ctx, body, h.marketBackpressure)
+	case OpConfig:
+		resp, err = handle(ctx, body, h.effectiveConfig)
 	default:
 		writeErr(w, http.StatusNotFound, errors.New("unknown diag endpoint"))
 		return

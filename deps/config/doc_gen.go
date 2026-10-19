@@ -103,6 +103,41 @@ stdout/stderr is redirected to. Rotated siblings (<file>.N,
 in a node-specific layer when logs are written by an external
 redirect. Requires a restart to take effect.`,
 		},
+		{
+			Name: "ScratchDir",
+			Type: "string",
+
+			Comment: `ScratchDir is where log query jobs keep their matched lines so agents
+can page through them and chain further filters without rescanning.
+Empty uses the system temp directory. The directory's contents are
+owned by curio and removed at startup. Requires a restart to take
+effect.`,
+		},
+		{
+			Name: "MaxScratchBytes",
+			Type: "int64",
+
+			Comment: `MaxScratchBytes caps the total size of matched lines kept for log query
+jobs on this node; also never uses more than half of the scratch
+filesystem's free space. (Default: 4 GiB)
+Updates will affect running instances.`,
+		},
+		{
+			Name: "LogScanWorkers",
+			Type: "int",
+
+			Comment: `LogScanWorkers is the number of parallel workers log query jobs on this
+node may use for scanning; 0 uses a quarter of the CPUs (at least 2).
+Updates will affect running instances.`,
+		},
+		{
+			Name: "MaxLogJobRuntime",
+			Type: "time.Duration",
+
+			Comment: `MaxLogJobRuntime bounds how long a single log query job may run.
+(Default: 1h)
+Updates will affect running instances.`,
+		},
 	},
 	"AuroraMCPToken": {
 		{

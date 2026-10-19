@@ -14,6 +14,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"golang.org/x/sys/unix"
@@ -73,6 +74,11 @@ type CommandResult struct {
 	DurationMS  int64
 }
 
+type DiskSmart struct {
+	Disk  string
+	Smart *SmartSummary
+}
+
 type StatFS struct {
 	TotalBytes, FreeBytes, AvailBytes int64
 	TotalInodes, FreeInodes           uint64
@@ -88,10 +94,13 @@ type StorageDiagResponse struct {
 	SectorStoreJSON string `json:",omitempty"`
 	StatFS          *StatFS
 	// Entries counts directory entries per sector file type directory.
-	Entries  map[string]int
-	Mount    *MountInfo
-	Devices  []BlockDevice
-	MDStat   string `json:",omitempty"`
+	Entries map[string]int
+	Mount   *MountInfo
+	Devices []BlockDevice
+	MDStat  string `json:",omitempty"`
+	// Smart summarizes SMART health of the backing disks; full smartctl
+	// output is available per disk from storage/disk.
+	Smart    []DiskSmart `json:",omitempty"`
 	Commands []CommandResult
 	Errors   []string `json:",omitempty"`
 }
@@ -191,14 +200,17 @@ func (h *handler) storageDiag(ctx context.Context, req StorageDiagRequest) (*Sto
 			runCmd(ctx, false, "findmnt", "-J", "--target", mi.MountPoint),
 		)
 	}
+	var ds []*Disk
 	for _, disk := range disks {
-		dev := "/dev/" + disk
-		resp.Commands = append(resp.Commands,
-			runCmd(ctx, false, "lsblk", "-J", "-O", dev),
-			runCmd(ctx, true, "smartctl", "-a", "-j", dev),
-		)
-		if strings.HasPrefix(disk, "nvme") {
-			resp.Commands = append(resp.Commands, runCmd(ctx, true, "nvme", "smart-log", "-o", "json", dev))
+		resp.Commands = append(resp.Commands, runCmd(ctx, false, "lsblk", "-J", "-O", "/dev/"+disk))
+		ds = append(ds, &Disk{Name: disk})
+	}
+	wctx, cancel := context.WithTimeout(ctx, 20*time.Second)
+	h.smart.get(wctx, ds, false)
+	cancel()
+	for _, d := range ds {
+		if d.Smart != nil {
+			resp.Smart = append(resp.Smart, DiskSmart{Disk: d.Name, Smart: d.Smart})
 		}
 	}
 	resp.Commands = append(resp.Commands, dmesgFor(ctx, resp.Devices))
@@ -238,15 +250,15 @@ func countEntries(ctx context.Context, dir string) (int, error) {
 	return n, nil
 }
 
-// findMount returns the mount containing path, from a mountinfo file.
-func findMount(mountinfo, path string) (*MountInfo, error) {
+// readMounts parses a mountinfo file.
+func readMounts(mountinfo string) ([]MountInfo, error) {
 	f, err := os.Open(mountinfo)
 	if err != nil {
 		return nil, err
 	}
 	defer func() { _ = f.Close() }()
 
-	var best *MountInfo
+	var out []MountInfo
 	sc := bufio.NewScanner(f)
 	sc.Buffer(make([]byte, 64<<10), 1<<20)
 	for sc.Scan() {
@@ -260,21 +272,35 @@ func findMount(mountinfo, path string) (*MountInfo, error) {
 		if len(pf) < 6 || len(qf) < 2 {
 			continue
 		}
-		mp := unescapeMount(pf[4])
-		if !pathWithin(path, mp) {
-			continue
-		}
-		if best == nil || len(mp) >= len(best.MountPoint) {
-			best = &MountInfo{MountPoint: mp, MajorMinor: pf[2], Options: pf[5], FSType: qf[0], Source: unescapeMount(qf[1])}
+		out = append(out, MountInfo{MountPoint: unescapeMount(pf[4]), MajorMinor: pf[2], Options: pf[5], FSType: qf[0], Source: unescapeMount(qf[1])})
+	}
+	return out, sc.Err()
+}
+
+// mountFor returns the mount containing path: the longest mount point
+// prefix, the last one mounted when stacked.
+func mountFor(mounts []MountInfo, path string) *MountInfo {
+	var best *MountInfo
+	for i := range mounts {
+		m := &mounts[i]
+		if pathWithin(path, m.MountPoint) && (best == nil || len(m.MountPoint) >= len(best.MountPoint)) {
+			best = m
 		}
 	}
-	if err := sc.Err(); err != nil {
+	return best
+}
+
+// findMount returns the mount containing path, from a mountinfo file.
+func findMount(mountinfo, path string) (*MountInfo, error) {
+	mounts, err := readMounts(mountinfo)
+	if err != nil {
 		return nil, err
 	}
-	if best == nil {
+	m := mountFor(mounts, path)
+	if m == nil {
 		return nil, fmt.Errorf("no mount contains %s", path)
 	}
-	return best, nil
+	return m, nil
 }
 
 func pathWithin(p, dir string) bool {
@@ -512,3 +538,228 @@ func (t *tailBuffer) Write(p []byte) (int, error) {
 }
 
 func (t *tailBuffer) String() string { return string(t.buf) }
+
+// ---- path overview ----
+
+const (
+	statTimeout   = 5 * time.Second
+	statParallel  = 16
+	fullPct       = 95.0
+	inodesFullPct = 90.0
+)
+
+type PathsRequest struct {
+	// PathIDs limits the overview to these paths; empty for all local paths.
+	PathIDs      []string `json:",omitempty"`
+	ProblemsOnly bool     `json:",omitempty"`
+	// CountEntries counts sector files per type directory (slow on big
+	// directories).
+	CountEntries bool `json:",omitempty"`
+	WaitMS       int  `json:",omitempty"`
+}
+
+type PathSummary struct {
+	PathID     string
+	LocalPath  string
+	CanSeal    bool
+	CanStore   bool
+	MountPoint string `json:",omitempty"`
+	FSType     string `json:",omitempty"`
+	Source     string `json:",omitempty"`
+	ReadOnly   bool   `json:",omitempty"`
+	TotalBytes int64
+	AvailBytes int64
+	UsedPct    float64
+	InodesPct  float64        `json:",omitempty"`
+	Disks      []string       `json:",omitempty"`
+	Verdict    string         `json:",omitempty"`
+	Entries    map[string]int `json:",omitempty"`
+	StatMS     int64
+	Problems   []string `json:",omitempty"`
+}
+
+type PathsResponse struct {
+	Total        int
+	WithProblems int
+	Paths        []PathSummary
+}
+
+var verdictRank = map[string]int{"ok": 0, "pending": 1, "unknown": 2, "warn": 3, "fail": 4}
+
+func (h *handler) storagePaths(ctx context.Context, req PathsRequest) (*PathsResponse, error) {
+	if h.d == nil || h.d.LocalStore == nil {
+		return nil, errors.New("no local storage on this node")
+	}
+	locals, err := h.d.LocalStore.Local(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("listing local storage: %w", err)
+	}
+	want := map[string]bool{}
+	for _, id := range req.PathIDs {
+		want[id] = true
+	}
+	mounts, _ := readMounts(filepath.Join(procRoot, "self/mountinfo"))
+
+	var sel []storiface.StoragePath
+	for _, l := range locals {
+		if len(want) == 0 || want[string(l.ID)] {
+			sel = append(sel, l)
+		}
+	}
+	sort.Slice(sel, func(a, b int) bool { return sel[a].LocalPath < sel[b].LocalPath })
+
+	out := make([]PathSummary, len(sel))
+	diskSet := map[string]*Disk{}
+	pathDisks := make([][]string, len(sel))
+	sem := make(chan struct{}, statParallel)
+	var wg sync.WaitGroup
+	var mu sync.Mutex
+	for i, l := range sel {
+		ps := &out[i]
+		ps.PathID, ps.LocalPath, ps.CanSeal, ps.CanStore = string(l.ID), l.LocalPath, l.CanSeal, l.CanStore
+		real, err := filepath.EvalSymlinks(l.LocalPath)
+		if err != nil {
+			ps.Problems = append(ps.Problems, "resolving path: "+err.Error())
+			real = l.LocalPath
+		}
+		if m := mountFor(mounts, real); m != nil {
+			ps.MountPoint, ps.FSType, ps.Source = m.MountPoint, m.FSType, m.Source
+			ps.ReadOnly = strings.HasPrefix(m.Options, "ro,") || m.Options == "ro"
+			if m.MountPoint == "/" {
+				ps.Problems = append(ps.Problems, "path is on the root filesystem: its mount is missing (unmounted or failed to mount?)")
+			}
+			_, disks := resolveDevices(m.MajorMinor)
+			pathDisks[i] = disks
+			mu.Lock()
+			for _, d := range disks {
+				diskSet[d] = &Disk{Name: d}
+			}
+			mu.Unlock()
+		}
+
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			sem <- struct{}{}
+			defer func() { <-sem }()
+			h.statPath(ctx, ps, req.CountEntries)
+		}()
+	}
+	wg.Wait()
+
+	var disks []*Disk
+	for _, d := range diskSet {
+		disks = append(disks, d)
+	}
+	wait := time.Duration(clampInt(req.WaitMS, 20_000, maxWaitMS)) * time.Millisecond
+	wctx, cancel := context.WithTimeout(ctx, wait)
+	h.smart.get(wctx, disks, false)
+	cancel()
+
+	resp := &PathsResponse{Total: len(out)}
+	for i := range out {
+		ps := &out[i]
+		ps.Disks = pathDisks[i]
+		ps.Verdict = ""
+		for _, dn := range ps.Disks {
+			d := diskSet[dn]
+			v := "unknown"
+			if d.Smart != nil {
+				v = d.Smart.Verdict
+			}
+			if ps.Verdict == "" || verdictRank[v] > verdictRank[ps.Verdict] {
+				ps.Verdict = v
+			}
+			if v == "warn" || v == "fail" {
+				ps.Problems = append(ps.Problems, fmt.Sprintf("disk %s %s: %s", dn, v, strings.Join(d.Smart.Reasons, "; ")))
+			}
+		}
+		if ps.ReadOnly {
+			ps.Problems = append(ps.Problems, "mounted read-only")
+		}
+		if len(ps.Problems) > 0 {
+			resp.WithProblems++
+		}
+		if !req.ProblemsOnly || len(ps.Problems) > 0 {
+			resp.Paths = append(resp.Paths, *ps)
+		}
+	}
+	return resp, nil
+}
+
+// statPath fills filesystem usage and accessibility. A stat that does not
+// return within statTimeout points to a hung mount (dead disk, NFS).
+func (h *handler) statPath(ctx context.Context, ps *PathSummary, withEntries bool) {
+	type res struct {
+		sfs   unix.Statfs_t
+		err   error
+		meta  []byte
+		merr  error
+		entry map[string]int
+	}
+	ch := make(chan res, 1)
+	start := time.Now()
+	go func() {
+		var r res
+		r.err = unix.Statfs(ps.LocalPath, &r.sfs)
+		if r.err == nil {
+			r.meta, r.merr = readCapped(filepath.Join(ps.LocalPath, "sectorstore.json"), maxMetaFile)
+		}
+		if r.err == nil && withEntries {
+			r.entry = map[string]int{}
+			for _, ft := range storiface.PathTypes {
+				if n, err := countEntries(ctx, filepath.Join(ps.LocalPath, ft.String())); err == nil {
+					r.entry[ft.String()] = n
+				}
+			}
+		}
+		ch <- r
+	}()
+	t := time.NewTimer(statTimeout)
+	if withEntries {
+		t.Reset(statTimeout * 12)
+	}
+	defer t.Stop()
+	select {
+	case r := <-ch:
+		ps.StatMS = time.Since(start).Milliseconds()
+		if r.err != nil {
+			ps.Problems = append(ps.Problems, "statfs: "+r.err.Error())
+			return
+		}
+		bs := int64(r.sfs.Bsize)
+		ps.TotalBytes = int64(r.sfs.Blocks) * bs
+		ps.AvailBytes = int64(r.sfs.Bavail) * bs
+		if r.sfs.Blocks > 0 {
+			ps.UsedPct = round1(100 * float64(r.sfs.Blocks-r.sfs.Bfree) / float64(r.sfs.Blocks))
+		}
+		if r.sfs.Files > 0 {
+			ps.InodesPct = round1(100 * float64(r.sfs.Files-r.sfs.Ffree) / float64(r.sfs.Files))
+		}
+		if r.sfs.Flags&unix.ST_RDONLY != 0 {
+			ps.ReadOnly = true
+		}
+		if ps.UsedPct >= fullPct {
+			ps.Problems = append(ps.Problems, fmt.Sprintf("filesystem %.1f%% full", ps.UsedPct))
+		}
+		if ps.InodesPct >= inodesFullPct {
+			ps.Problems = append(ps.Problems, fmt.Sprintf("inodes %.1f%% used", ps.InodesPct))
+		}
+		switch {
+		case r.merr != nil:
+			ps.Problems = append(ps.Problems, "sectorstore.json unreadable: "+r.merr.Error())
+		case !strings.Contains(string(r.meta), ps.PathID):
+			ps.Problems = append(ps.Problems, "sectorstore.json does not contain this path's ID (different filesystem mounted here?)")
+		}
+		ps.Entries = r.entry
+		if ps.StatMS > 1000 {
+			ps.Problems = append(ps.Problems, fmt.Sprintf("slow filesystem: stat took %d ms", ps.StatMS))
+		}
+	case <-t.C:
+		ps.StatMS = time.Since(start).Milliseconds()
+		ps.Problems = append(ps.Problems, fmt.Sprintf("statfs/read did not return within %s: mount may be hung (dead disk, controller or network filesystem)", statTimeout))
+	case <-ctx.Done():
+	}
+}
+
+func round1(f float64) float64 { return float64(int64(f*10+0.5)) / 10 }

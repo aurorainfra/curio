@@ -277,7 +277,9 @@ func NewCachedBackPressure() *lazy.Lazy[*CachedBackPressure] {
 		log.Info("initializing backpressure module")
 		c := ttlcache.NewCache()
 		c.SkipTTLExtensionOnHit(true)
-		return &CachedBackPressure{cache: c}, nil
+		cbp := &CachedBackPressure{cache: c}
+		auroraRegister(cbp)
+		return cbp, nil
 	})
 }
 

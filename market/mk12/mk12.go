@@ -33,6 +33,7 @@ import (
 	"github.com/filecoin-project/go-state-types/crypto"
 	"github.com/filecoin-project/go-state-types/network"
 
+	"github.com/filecoin-project/curio/aurora/marketlog"
 	"github.com/filecoin-project/curio/deps/config"
 	"github.com/filecoin-project/curio/harmony/harmonydb"
 	"github.com/filecoin-project/curio/lib/lazy"
@@ -147,7 +148,9 @@ func NewMK12Handler(
 
 // ExecuteDeal is called when the Storage Provider receives a deal proposal
 // from the network
-func (m *MK12) ExecuteDeal(ctx context.Context, dp *DealParams, clientPeer peer.ID) (*ProviderDealRejectionInfo, error) {
+func (m *MK12) ExecuteDeal(ctx context.Context, dp *DealParams, clientPeer peer.ID) (rej *ProviderDealRejectionInfo, err error) {
+	ctx, dec := m.auroraDecision(ctx, dp)
+	defer func() { dec.Finish(rej, err) }()
 
 	ds := &ProviderDealState{
 		DealUuid:           dp.DealUUID,
@@ -683,11 +686,14 @@ func (m *MK12) maybeApplyBackpressure(ctx context.Context, maddr address.Address
 		return false, xerrors.Errorf("failed to get MK12 pressure: %w", err)
 	}
 
+	marketlog.NoteBackpressure(ctx, "mk12", pressure)
 	if pressure {
 		return true, nil
 	}
 
-	return m.backpressure.SectorPressure(ctx, &m.cfg.Ingest, m.db)
+	wait, err = m.backpressure.SectorPressure(ctx, &m.cfg.Ingest, m.db)
+	marketlog.NoteBackpressure(ctx, "sector", wait)
+	return wait, err
 }
 
 // applyFilters is used to validate deal proposals against client and pricing filters

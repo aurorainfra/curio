@@ -401,7 +401,7 @@ func (s *Server) registerStorageTools() {
 		})
 
 	addTool(s, "storage_diag",
-		"Static storage health checks of one storage path, run on the machine serving it: sectorstore.json, statfs, entry counts per file type directory, the mount and the block devices behind it (partitions, md/dm/LVM members), df, findmnt, lsblk, smartctl and nvme smart-log on the backing disks, /proc/mdstat, and storage-related kernel log lines. Commands are fixed; privileged ones need an operator sudo rule and report Unavailable otherwise.",
+		"Deep check of one storage path on the machine serving it: sectorstore.json, statfs, entry counts per file type directory, the mount and the block devices behind it (partitions, md/dm/LVM members), SMART summaries of the backing disks, df, findmnt, lsblk, /proc/mdstat and storage-related kernel log lines. For many paths use storage_overview; for full smartctl output use storage_disk_detail.",
 		func(ctx context.Context, in storageDiagArgs) (any, error) {
 			if in.PathID == "" {
 				return nil, xerrors.New("path_id is required")

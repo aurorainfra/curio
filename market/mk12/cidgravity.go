@@ -234,6 +234,7 @@ func (m *MK12) cidGravityCheck(ctx context.Context, deal *ProviderDealState) (bo
 		"matchingAcceptanceLogic", response.MatchingAcceptanceLogic,
 		"matchingPricing", response.MatchingPricing,
 		"matchingRule", response.MatchingRule)
+	auroraNoteCIDGravity(ctx, response)
 
 	if response.Decision == "accept" {
 		if isCidGravityMinerCheckDeal {
