@@ -142,6 +142,7 @@ func DefaultCurioConfig() *CurioConfig {
 				MaxOutputBytes:   NewDynamic(256 << 10),
 				ToolTimeout:      NewDynamic(time.Minute),
 				LogFiles:         []string{},
+				ScratchDir:       "/tmp",
 				MaxScratchBytes:  NewDynamic(int64(4 << 30)),
 				LogScanWorkers:   NewDynamic(0),
 				MaxLogJobRuntime: NewDynamic(time.Hour),
@@ -1213,9 +1214,9 @@ type AuroraMCPConfig struct {
 
 	// ScratchDir is where log query jobs keep their matched lines so agents
 	// can page through them and chain further filters without rescanning.
-	// Empty uses the system temp directory. The directory's contents are
-	// owned by curio and removed at startup. Requires a restart to take
-	// effect.
+	// Files go to a curio-aurora-diag-<listen address> subdirectory, which
+	// is owned by curio and emptied at startup. Requires a restart to take
+	// effect. (Default: /tmp)
 	ScratchDir string
 
 	// MaxScratchBytes caps the total size of matched lines kept for log query

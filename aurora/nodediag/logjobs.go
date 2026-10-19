@@ -60,7 +60,7 @@ func newJobRegistry(d *deps.Deps, lf *logFiles) *jobRegistry {
 	r := &jobRegistry{d: d, lf: lf, jobs: map[string]*queryJob{}}
 	r.wcond = newCond(r)
 
-	base := os.TempDir()
+	base := "/tmp"
 	instance := "default"
 	if d != nil && d.Cfg != nil && d.Cfg.Aurora.MCP.ScratchDir != "" {
 		base = d.Cfg.Aurora.MCP.ScratchDir

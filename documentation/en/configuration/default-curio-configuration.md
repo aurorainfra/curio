@@ -1465,12 +1465,12 @@ description: The default curio configuration
 
     # ScratchDir is where log query jobs keep their matched lines so agents
     # can page through them and chain further filters without rescanning.
-    # Empty uses the system temp directory. The directory's contents are
-    # owned by curio and removed at startup. Requires a restart to take
-    # effect.
+    # Files go to a curio-aurora-diag-<listen address> subdirectory, which
+    # is owned by curio and emptied at startup. Requires a restart to take
+    # effect. (Default: /tmp)
     #
     # type: string
-    #ScratchDir = ""
+    #ScratchDir = "/tmp"
 
     # MaxScratchBytes caps the total size of matched lines kept for log query
     # jobs on this node; also never uses more than half of the scratch
