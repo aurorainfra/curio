@@ -72,7 +72,7 @@ func (s *StorageGCMark) markSealPathLeftovers(ctx context.Context, storageSector
 	var candidates []sealPathLeftover
 	for storageID, decls := range storageSectors {
 		for _, decl := range decls {
-			for _, ft := range decl.SectorFileType.AllSet() {
+			for _, ft := range decl.AllSet() {
 				switch ft {
 				case storiface.FTSealed, storiface.FTCache, storiface.FTUnsealed, storiface.FTUpdate, storiface.FTUpdateCache:
 				default:

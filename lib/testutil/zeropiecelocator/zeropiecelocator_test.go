@@ -36,7 +36,7 @@ func TestHandler_HEAD_V1(t *testing.T) {
 	url := fmt.Sprintf("%s?id=%s", ts.URL, PieceCIDV1.String())
 	resp, err := http.Head(url)
 	require.NoError(t, err)
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	require.Equal(t, http.StatusOK, resp.StatusCode)
 	require.Equal(t, strconv.FormatInt(RawSize, 10), resp.Header.Get("Content-Length"))
@@ -49,7 +49,7 @@ func TestHandler_HEAD_V2(t *testing.T) {
 	url := fmt.Sprintf("%s?id=%s", ts.URL, PieceCIDV2.String())
 	resp, err := http.Head(url)
 	require.NoError(t, err)
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	require.Equal(t, http.StatusOK, resp.StatusCode)
 	require.Equal(t, strconv.FormatInt(RawSize, 10), resp.Header.Get("Content-Length"))
@@ -62,7 +62,7 @@ func TestHandler_HEAD_Unknown(t *testing.T) {
 	url := fmt.Sprintf("%s?id=%s", ts.URL, "baga6ea4seaqao7s73y24kcutaosvacpdjgfe5pw76ooze3glnc7bs3u6tgmqrq")
 	resp, err := http.Head(url)
 	require.NoError(t, err)
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	require.Equal(t, http.StatusNotFound, resp.StatusCode)
 }
@@ -73,7 +73,7 @@ func TestHandler_GET_StreamsZeros(t *testing.T) {
 	url := fmt.Sprintf("%s?id=%s", ts.URL, PieceCIDV1.String())
 	resp, err := http.Get(url)
 	require.NoError(t, err)
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	require.Equal(t, http.StatusOK, resp.StatusCode)
 	require.Equal(t, strconv.FormatInt(RawSize, 10), resp.Header.Get("Content-Length"))
@@ -107,7 +107,7 @@ func TestHandler_RangeRequest(t *testing.T) {
 
 	resp, err := http.DefaultClient.Do(req)
 	require.NoError(t, err)
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	require.Equal(t, http.StatusPartialContent, resp.StatusCode)
 	require.Equal(t, "100", resp.Header.Get("Content-Length"))
@@ -136,7 +136,7 @@ func TestHandler_RangeRequest_LargeOffset(t *testing.T) {
 
 	resp, err := http.DefaultClient.Do(req)
 	require.NoError(t, err)
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	require.Equal(t, http.StatusPartialContent, resp.StatusCode)
 	require.Equal(t, "512", resp.Header.Get("Content-Length"))

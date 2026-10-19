@@ -127,7 +127,7 @@ func NewRetrievalProvider(ctx context.Context, db *harmonydb.DB, idxStore *index
 
 	// Block cache: size-partitioned, byte-budgeted, ghost-set admission
 	// (see blockcache package doc); nil bcCfg disables caching entirely.
-	var cbs blockstore.Blockstore = blockstore.Adapt(fbs)
+	cbs := blockstore.Adapt(fbs)
 	if bcCfg != nil {
 		cbs = blockstore.NewReadCachedBlockstore(cbs, &BlockstoreCacheWrap[blockstore.MhString]{Sub: blockcache.New(*bcCfg)})
 	}
