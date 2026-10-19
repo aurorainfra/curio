@@ -1494,4 +1494,27 @@ description: The default curio configuration
     # type: time.Duration
     #MaxLogJobRuntime = "1h0m0s"
 
+  # WebUI configures authentication of the web UI (GUI address).
+  #
+  # type: AuroraWebUIConfig
+  [Aurora.WebUI]
+
+    # Users allowed to use the web UI. Browsers log in with HTTP Basic auth
+    # and then use a session cookie. Only bcrypt hashes of passwords are
+    # stored; generate one with:
+    # htpasswd -nbBC 12 "" 'password' | cut -d: -f2
+    # or: go run ./aurora/webauth/cmd/hashpw
+    # Updates apply to running nodes; disabling a user or changing their
+    # password ends their sessions.
+    # Updates will affect running instances.
+    #
+    # type: []AuroraWebUser
+    #Users = []
+
+    # SessionTTL is how long a login session lasts. (Default: 12h)
+    # Updates will affect running instances.
+    #
+    # type: time.Duration
+    #SessionTTL = "12h0m0s"
+
 ```

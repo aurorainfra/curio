@@ -147,6 +147,10 @@ func DefaultCurioConfig() *CurioConfig {
 				LogScanWorkers:   NewDynamic(0),
 				MaxLogJobRuntime: NewDynamic(time.Hour),
 			},
+			WebUI: AuroraWebUIConfig{
+				Users:      NewDynamic([]AuroraWebUser{}),
+				SessionTTL: NewDynamic(12 * time.Hour),
+			},
 		},
 		HTTP: HTTPConfig{
 			DomainName:        "",
@@ -1176,6 +1180,38 @@ type AuroraConfig struct {
 	// MCP configures the read-only diagnostics MCP (Model Context Protocol)
 	// server served at /mcp on the GUI address.
 	MCP AuroraMCPConfig
+
+	// WebUI configures authentication of the web UI (GUI address).
+	WebUI AuroraWebUIConfig
+}
+
+// AuroraWebUIConfig configures authentication for everything served on the
+// GUI address: pages, API, websockets, config editor, SQL console and pprof.
+// Only CORS preflight requests and /mcp (which has its own bearer-token auth)
+// are exempt. With no enabled users every request is refused.
+type AuroraWebUIConfig struct {
+	// Users allowed to use the web UI. Browsers log in with HTTP Basic auth
+	// and then use a session cookie. Only bcrypt hashes of passwords are
+	// stored; generate one with:
+	//   htpasswd -nbBC 12 "" 'password' | cut -d: -f2
+	// or: go run ./aurora/webauth/cmd/hashpw
+	// Updates apply to running nodes; disabling a user or changing their
+	// password ends their sessions.
+	Users *Dynamic[[]AuroraWebUser]
+
+	// SessionTTL is how long a login session lasts. (Default: 12h)
+	SessionTTL *Dynamic[time.Duration]
+}
+
+// AuroraWebUser is one web UI user.
+type AuroraWebUser struct {
+	Name string
+
+	// PasswordBcrypt is the bcrypt hash of the user's password.
+	PasswordBcrypt string
+
+	// Disabled revokes the user without removing it.
+	Disabled bool
 }
 
 // AuroraMCPConfig configures the read-only diagnostics MCP server. Agents

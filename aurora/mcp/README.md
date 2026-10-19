@@ -47,9 +47,9 @@ Upstream files are touched only by one-line hooks:
 - **Redaction.** JWTs, `Authorization` headers, PEM private keys, the storage RPC secret and chain API tokens are removed from all tool output.
 - **Audit.** Every call is logged to `aurora_mcp_calls` and to the `aurora/mcp` logger, with agent, tool, arguments, duration, size and error.
 
-### Not changed by this (operator note)
+### Operator note
 
-The GUI port has no authentication upstream. That includes the SQL console (`/pages/sql`, arbitrary SQL as the DB superuser) and pprof. `/debug/pprof` on the node RPC port is also unauthenticated. Keep both ports firewalled to operator networks.
+The GUI port is authenticated by `aurora/webauth` (see `aurora/webauth/README.md`), and `/mcp` keeps its own bearer tokens. `/debug/pprof` on the node RPC port is still unauthenticated upstream. Keep that port firewalled to cluster and operator networks.
 
 ## Setup
 

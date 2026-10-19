@@ -55,6 +55,12 @@ Required when URL is a stateless /notify endpoint; leave empty for a stateful /n
 			Comment: `MCP configures the read-only diagnostics MCP (Model Context Protocol)
 server served at /mcp on the GUI address.`,
 		},
+		{
+			Name: "WebUI",
+			Type: "AuroraWebUIConfig",
+
+			Comment: `WebUI configures authentication of the web UI (GUI address).`,
+		},
 	},
 	"AuroraMCPConfig": {
 		{
@@ -157,6 +163,48 @@ Updates will affect running instances.`,
 			Type: "bool",
 
 			Comment: `Disabled revokes the token without removing it.`,
+		},
+	},
+	"AuroraWebUIConfig": {
+		{
+			Name: "Users",
+			Type: "[]AuroraWebUser",
+
+			Comment: `Users allowed to use the web UI. Browsers log in with HTTP Basic auth
+and then use a session cookie. Only bcrypt hashes of passwords are
+stored; generate one with:
+htpasswd -nbBC 12 "" 'password' | cut -d: -f2
+or: go run ./aurora/webauth/cmd/hashpw
+Updates apply to running nodes; disabling a user or changing their
+password ends their sessions.
+Updates will affect running instances.`,
+		},
+		{
+			Name: "SessionTTL",
+			Type: "time.Duration",
+
+			Comment: `SessionTTL is how long a login session lasts. (Default: 12h)
+Updates will affect running instances.`,
+		},
+	},
+	"AuroraWebUser": {
+		{
+			Name: "Name",
+			Type: "string",
+
+			Comment: ``,
+		},
+		{
+			Name: "PasswordBcrypt",
+			Type: "string",
+
+			Comment: `PasswordBcrypt is the bcrypt hash of the user's password.`,
+		},
+		{
+			Name: "Disabled",
+			Type: "bool",
+
+			Comment: `Disabled revokes the user without removing it.`,
 		},
 	},
 	"BalanceManagerConfig": {

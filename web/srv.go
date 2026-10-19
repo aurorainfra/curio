@@ -23,6 +23,7 @@ import (
 	"go.opencensus.io/tag"
 
 	auroramcp "github.com/filecoin-project/curio/aurora/mcp"
+	"github.com/filecoin-project/curio/aurora/webauth"
 	"github.com/filecoin-project/curio/deps"
 	"github.com/filecoin-project/curio/web/api"
 
@@ -158,7 +159,7 @@ func GetSrv(ctx context.Context, deps *deps.Deps, devMode bool) (*http.Server, e
 	})
 
 	return &http.Server{
-		Handler: corsHandler(mx),
+		Handler: webauth.Wrap(deps.Cfg, corsHandler(mx)),
 		BaseContext: func(listener net.Listener) context.Context {
 			ctx, _ := tag.New(context.Background(), tag.Upsert(metrics.APIInterface, "curio"))
 			return ctx
