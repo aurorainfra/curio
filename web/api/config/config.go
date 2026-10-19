@@ -25,6 +25,10 @@ var log = logging.Logger("config-ui")
 // Each clause is optional, but at least one number+unit pair is required.
 const durationPattern = `^(\d+(\.\d+)?(h|m|s|ms|us|µs|ns))+$`
 
+// filPattern validates the values types.ParseFIL accepts: a decimal number
+// with an optional fil, afil or attofil suffix in any case.
+const filPattern = `^\s*-?[0-9]*\.?[0-9]+\s*([Aa]([Tt][Tt][Oo])?)?([Ff][Ii][Ll])?\s*$`
+
 type cfg struct {
 	*deps.Deps
 }
@@ -76,8 +80,9 @@ func uiSchemaMapper(i reflect.Type) *jsonschema.Schema {
 func uiSchemaSpecialType(i reflect.Type) *jsonschema.Schema {
 	if i == reflect.TypeOf(types.MustParseFIL("1 Fil")) {
 		return &jsonschema.Schema{
-			Type:    "string",
-			Pattern: "1 fil/0.03 fil/0.31/1 attofil",
+			Type:        "string",
+			Pattern:     filPattern,
+			Description: `FIL amount, e.g. "1 fil", "0.03 fil", "0.31" or "1 attofil"`,
 		}
 	}
 	if i == reflect.TypeFor[time.Duration]() {
@@ -100,6 +105,7 @@ func buildUISchema() *jsonschema.Schema {
 		Mapper: uiSchemaMapper,
 	}
 	sch := ref.Reflect(uiSchemaRoot())
+	hoistNestedDefinitions(sch)
 
 	// Helper to add comments to a schema's properties
 	addComments := func(targetSchema *jsonschema.Schema, docEntries []config.DocField) {
@@ -177,6 +183,62 @@ func buildUISchema() *jsonschema.Schema {
 	}
 	allOpt(sch)
 	return sch
+}
+
+// hoistNestedDefinitions moves the definitions of nested standalone schemas
+// into the root schema. uiSchemaMapper reflects the inner type of Dynamic[T]
+// fields with a separate reflector, which embeds a complete schema (with its
+// own $schema and $defs) whose "#/$defs/..." references are resolved against
+// the document root by JSON Schema consumers. Without hoisting, struct-typed
+// Dynamic fields such as Addresses reference definitions that do not exist,
+// and the editor renders their items as untyped values.
+func hoistNestedDefinitions(root *jsonschema.Schema) {
+	if root.Definitions == nil {
+		root.Definitions = jsonschema.Definitions{}
+	}
+	visited := map[*jsonschema.Schema]bool{}
+	var walk func(s *jsonschema.Schema)
+	walk = func(s *jsonschema.Schema) {
+		if s == nil || visited[s] {
+			return
+		}
+		visited[s] = true
+		if s != root {
+			for name, def := range s.Definitions {
+				if _, ok := root.Definitions[name]; !ok {
+					root.Definitions[name] = def
+				}
+				walk(def)
+			}
+			s.Definitions = nil
+			s.Version = ""
+			s.ID = ""
+		}
+		if s.Properties != nil {
+			for pair := s.Properties.Oldest(); pair != nil; pair = pair.Next() {
+				walk(pair.Value)
+			}
+		}
+		for _, sub := range []*jsonschema.Schema{s.Items, s.AdditionalProperties, s.Not, s.If, s.Then, s.Else} {
+			walk(sub)
+		}
+		for _, list := range [][]*jsonschema.Schema{s.AllOf, s.AnyOf, s.OneOf, s.PrefixItems} {
+			for _, sub := range list {
+				walk(sub)
+			}
+		}
+	}
+	// definitions hoisted while walking are walked as they are added
+	for {
+		n := len(root.Definitions)
+		for _, def := range root.Definitions {
+			walk(def)
+		}
+		walk(root)
+		if len(root.Definitions) == n {
+			return
+		}
+	}
 }
 
 func (c *cfg) getLayers(w http.ResponseWriter, r *http.Request) {
