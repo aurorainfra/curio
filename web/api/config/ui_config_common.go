@@ -31,7 +31,13 @@ func tomlToJSONMap(layerToml string) (map[string]any, error) {
 	return configStruct, nil
 }
 
-func prepareCurioLayerSave(_ string, configStruct map[string]any) (string, error) {
+// prepareCurioLayerSave turns a UI submission into the text stored for a
+// layer. The base layer is stored as a full, commented config. Other layers
+// are overlays applied on top of base, so they are stored with exactly the
+// keys the layer sets: re-serializing them as a full config would comment
+// out values equal to the defaults (dropping overrides of base back to the
+// default) and emit an empty [[Addresses]] entry that replaces base's miners.
+func prepareCurioLayerSave(layer string, configStruct map[string]any) (string, error) {
 	var tomlData bytes.Buffer
 	if err := toml.NewEncoder(&tomlData).Encode(configStruct); err != nil {
 		return "", err
@@ -42,7 +48,16 @@ func prepareCurioLayerSave(_ string, configStruct map[string]any) (string, error
 		return "", err
 	}
 
-	return formatLayerTOML(curioCfg)
+	if layer == "base" {
+		return formatLayerTOML(curioCfg)
+	}
+
+	layerToml, err := depsconfig.StripEmptyDynamicTables(tomlData.String(), depsconfig.DefaultCurioConfig())
+	if err != nil {
+		return "", err
+	}
+	layerToml, _ = depsconfig.DropEmptyAddresses(layerToml)
+	return layerToml, nil
 }
 
 func formatLayerTOML(curioCfg *depsconfig.CurioConfig) (string, error) {

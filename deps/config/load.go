@@ -626,7 +626,14 @@ func GetConfigs(ctx context.Context, db *harmonydb.DB, layers []string) ([]Confi
 func ApplyLayers[T any](ctx context.Context, configResult T, layers []ConfigText, fixupFn func(string, T) error) error {
 	have := []string{}
 	for _, layer := range layers {
-		meta, err := LoadConfigWithUpgradesGeneric(layer.Config, configResult, fixupFn)
+		text := layer.Config
+		if layer.Title != "base" {
+			if stripped, ok := DropEmptyAddresses(text); ok {
+				logger.Warnw("ignoring Addresses section without miner addresses in config layer; it would replace the base layer's miners", "layer", layer.Title)
+				text = stripped
+			}
+		}
+		meta, err := LoadConfigWithUpgradesGeneric(text, configResult, fixupFn)
 		if err != nil {
 			return fmt.Errorf("could not read layer, bad toml %s: %w", layer, err)
 		}
