@@ -7,9 +7,10 @@ import (
 	"sort"
 	"time"
 
+	"golang.org/x/xerrors"
+
 	"github.com/filecoin-project/go-address"
 	"github.com/filecoin-project/go-bitfield"
-	"golang.org/x/xerrors"
 
 	"github.com/filecoin-project/curio/harmony/harmonydb"
 

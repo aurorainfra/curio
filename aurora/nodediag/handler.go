@@ -18,8 +18,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/filecoin-project/go-jsonrpc/auth"
 	logging "github.com/ipfs/go-log/v2"
+
+	"github.com/filecoin-project/go-jsonrpc/auth"
 
 	"github.com/filecoin-project/curio/deps"
 )

@@ -305,7 +305,7 @@ func (s *Server) registerLogQueryTools() {
 				if err != nil {
 					return nil, err
 				}
-				if len(ms) > 1 && len(in.Files) > 0 && !(len(in.Files) == 1 && in.Files[0] == "all") {
+				if len(ms) > 1 && len(in.Files) > 0 && (len(in.Files) != 1 || in.Files[0] != "all") {
 					return nil, xerrors.New(`files must be empty or ["all"] with machine "all"; file names are per machine`)
 				}
 			}

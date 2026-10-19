@@ -10,8 +10,9 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/filecoin-project/go-jsonrpc/auth"
 	"github.com/stretchr/testify/require"
+
+	"github.com/filecoin-project/go-jsonrpc/auth"
 )
 
 const testDump = `goroutine 1 [running]:

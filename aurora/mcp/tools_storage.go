@@ -7,8 +7,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/filecoin-project/go-state-types/abi"
 	"golang.org/x/xerrors"
+
+	"github.com/filecoin-project/go-state-types/abi"
 
 	"github.com/filecoin-project/curio/aurora/nodediag"
 	"github.com/filecoin-project/curio/harmony/harmonydb"

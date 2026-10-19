@@ -13,9 +13,10 @@ import (
 	"sync"
 	"time"
 
-	"github.com/filecoin-project/go-jsonrpc/auth"
 	"github.com/gbrlsnchs/jwt/v3"
 	"golang.org/x/xerrors"
+
+	"github.com/filecoin-project/go-jsonrpc/auth"
 
 	"github.com/filecoin-project/curio/aurora/nodediag"
 	"github.com/filecoin-project/curio/deps"
